@@ -1,6 +1,8 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
+import Plus from 'lucide-react-native/icons/plus';
+import Trash2 from 'lucide-react-native/icons/trash-2';
 import Undo2 from 'lucide-react-native/icons/undo-2';
 import X from 'lucide-react-native/icons/x';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
@@ -17,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, Line, Pattern, Rect } from 'react-native-svg';
 
+import { AddControlDialog } from '@/components/AddControlDialog';
 import { SetupButton } from '@/components/SetupCard';
 import { Slider } from '@/components/Slider';
 import { Toggle } from '@/components/Toggle';
@@ -25,16 +28,23 @@ import { palette } from '@/constants/palette';
 import {
   type ControlLayout,
   controlHeight,
+  controlName,
+  createExtraControls,
   EMPTY_LAYOUT,
+  type ExtraBinding,
+  extraControls,
   fitControl,
   GRID_DP,
+  isTurbo,
   loadControlLayout,
+  MAX_EXTRA_CONTROLS,
   type Orientation,
   type OrientationLayout,
   type PlacedControl,
   placedControl,
   saveControlLayout,
   sizeLimits,
+  withoutExtra,
 } from '@/lib/controlLayout';
 import { getPlayRequest } from '@/lib/library';
 import { getRomSaveId, PREVIEW_THUMBNAIL, readPreviewUri } from '@/lib/saveStates';
@@ -46,6 +56,9 @@ const PANEL_HEIGHT = 178;
 const PREVIEW_SHARE = 0.36;
 const LANDSCAPE_PANEL_WIDTH = 428;
 const LANDSCAPE_PANEL_TOP = 68;
+// New buttons appear on whichever side of the floating panel has room, so it can't hide them.
+const LANDSCAPE_SPAWN_Y_BELOW_PANEL = 336;
+const LANDSCAPE_SPAWN_Y_ABOVE_PANEL = 80;
 const GBA_WIDTH = 240;
 const GBA_HEIGHT = 160;
 const MIN_OPACITY = 0.2;
@@ -54,6 +67,7 @@ const DOT_SPACING = 24;
 const HATCH_SPACING = 8;
 const HANDLE_SIZE = 16;
 const HANDLE_TOUCH = 40;
+const LABEL_INSET = 12;
 
 /** Converts between the player's design units and pixels inside the editing canvas. */
 type Canvas = {
@@ -221,16 +235,17 @@ function EditableControl({
         ? 14 * canvas.scale
         : 0;
   const armWidth = width / 3;
+  const turbo = isTurbo(control);
   const surface = selected
     ? 'border-accent bg-accent/15'
-    : 'border-dashed border-secondary bg-control';
+    : `border-dashed bg-control ${turbo ? 'border-danger' : 'border-secondary'}`;
 
   return (
     <View
       {...panHandlers}
       accessible
       accessibilityRole="button"
-      accessibilityLabel={`${control.label}, ${Math.round(placed.size)} dp`}
+      accessibilityLabel={`${controlName(control)}, ${Math.round(placed.size)} dp`}
       accessibilityState={{ selected }}
       style={{ position: 'absolute', left: centerX - width / 2, top: centerY - height / 2, width, height }}>
       <View className="flex-1 items-center justify-center" style={{ opacity }}>
@@ -252,9 +267,12 @@ function EditableControl({
           />
         )}
         <Text
-          className={`font-inter-bold text-foreground ${
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          className={`font-inter-bold ${turbo ? 'text-danger' : 'text-foreground'} ${
             control.kind === 'cross' ? 'text-[13px]' : 'text-[16px]'
-          }`}>
+          }`}
+          style={{ maxWidth: width - LABEL_INSET }}>
           {control.label}
         </Text>
       </View>
@@ -281,6 +299,56 @@ function EditableControl({
           </View>
         </>
       )}
+    </View>
+  );
+}
+
+class PanelOrigin {
+  constructor(
+    public left: number,
+    public top: number
+  ) {}
+}
+
+/** Drags from any part of the panel that isn't a control; those take their own touches first. */
+function FloatingPanel({
+  left,
+  top,
+  width,
+  onDrag,
+  onHeight,
+  children,
+}: {
+  left: number;
+  top: number;
+  width: number;
+  onDrag: (left: number, top: number) => void;
+  onHeight: (height: number) => void;
+  children: ReactNode;
+}) {
+  const latest = useLatest({ left, top, onDrag });
+  const [origin] = useState(() => new PanelOrigin(left, top));
+  const [panHandlers] = useState(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          origin.left = latest.get().left;
+          origin.top = latest.get().top;
+        },
+        onPanResponderMove: (_, { dx, dy }) =>
+          latest.get().onDrag(origin.left + dx, origin.top + dy),
+      }).panHandlers
+  );
+
+  return (
+    <View
+      {...panHandlers}
+      onLayout={(event) => onHeight(event.nativeEvent.layout.height)}
+      className="absolute gap-1 rounded-[18px] border border-control-border bg-card px-3 pb-3 pt-2"
+      style={{ left, top, width }}>
+      <View className="h-1 w-10 self-center rounded-full bg-control-border" />
+      {children}
     </View>
   );
 }
@@ -338,6 +406,14 @@ function IconAction({
   );
 }
 
+function DeleteControlButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <IconAction label={`Delete ${label}`} onPress={onPress}>
+      <Trash2 size={20} color={palette.danger} />
+    </IconAction>
+  );
+}
+
 function DoneButton({ onPress }: { onPress: () => void }) {
   return (
     <Pressable
@@ -374,6 +450,9 @@ export default function ControlEditorScreen() {
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [panelSpot, setPanelSpot] = useState<{ left: number; top: number } | null>(null);
+  const [panelHeight, setPanelHeight] = useState(0);
   const [failed, setFailed] = useState(false);
   const beforeGesture = useRef<ControlLayout | null>(null);
 
@@ -413,7 +492,10 @@ export default function ControlEditorScreen() {
 
   const current: OrientationLayout = layout[orientation];
   const orientationDefaults = defaults[orientation];
-  const selected = orientationDefaults.controls.find((control) => control.id === selectedId);
+  const extras = extraControls(current);
+  const allControls = [...orientationDefaults.controls, ...extras];
+  const selected = allControls.find((control) => control.id === selectedId);
+  const selectedExtra = extras.find((control) => control.id === selectedId);
   const isLandscape = orientation === 'landscape';
 
   const availableWidth = width - insets.left - insets.right;
@@ -452,6 +534,17 @@ export default function ControlEditorScreen() {
     GBA_WIDTH
   ).toFixed(1);
 
+  const panelWidth = Math.min(availableWidth - 16, LANDSCAPE_PANEL_WIDTH * scale);
+  // Clamped here so the panel stays on screen when it grows, as well as while dragging.
+  const panelLeft = Math.min(
+    Math.max(0, availableWidth - panelWidth),
+    Math.max(0, panelSpot?.left ?? (availableWidth - panelWidth) / 2)
+  );
+  const panelTop = Math.min(
+    Math.max(0, availableHeight - panelHeight),
+    Math.max(0, panelSpot?.top ?? canvas.originY + LANDSCAPE_PANEL_TOP * scale)
+  );
+
   function beginChange() {
     beforeGesture.current = layout;
   }
@@ -474,6 +567,27 @@ export default function ControlEditorScreen() {
         [control.id]: fitControl(control, orientationDefaults, next, snapToGrid),
       },
     });
+  }
+
+  function addExtras(bindings: ExtraBinding[]) {
+    const panelInLowerHalf = panelTop + panelHeight / 2 > availableHeight / 2;
+    const landscapeSpawnY = panelInLowerHalf
+      ? LANDSCAPE_SPAWN_Y_ABOVE_PANEL
+      : LANDSCAPE_SPAWN_Y_BELOW_PANEL;
+    const spawnY = isLandscape
+      ? landscapeSpawnY
+      : (orientationDefaults.top + orientationDefaults.height) / 2;
+    const added = createExtraControls(bindings, orientationDefaults, extras.length, spawnY);
+    setHistory((past) => [...past, layout]);
+    updateOrientation({ ...current, extras: [...extras, ...added] });
+    setSelectedId(added[added.length - 1]?.id ?? null);
+    setAdding(false);
+  }
+
+  function deleteExtra(id: string) {
+    setHistory((past) => [...past, layout]);
+    updateOrientation(withoutExtra(current, id));
+    setSelectedId(null);
   }
 
   function undo() {
@@ -505,7 +619,7 @@ export default function ControlEditorScreen() {
     }
   }
 
-  const controls = orientationDefaults.controls.map((control) => (
+  const controls = allControls.map((control) => (
     <EditableControl
       key={control.id}
       control={control}
@@ -565,7 +679,8 @@ export default function ControlEditorScreen() {
               Reset {orientation} layout?
             </Text>
             <Text className="font-inter text-[15px] leading-[22px] text-secondary">
-              Every control in {orientation} goes back to its default place and size.
+              Every control in {orientation} goes back to its default place and size, and buttons
+              you added are removed.
             </Text>
           </View>
           <View className="flex-row gap-3">
@@ -585,10 +700,21 @@ export default function ControlEditorScreen() {
     </Modal>
   );
 
+  const addButton = (
+    <IconAction
+      label="Add a button"
+      disabled={extras.length >= MAX_EXTRA_CONTROLS}
+      onPress={() => setAdding(true)}>
+      <Plus size={22} color={palette.accent.DEFAULT} />
+    </IconAction>
+  );
+  const addDialog = adding && (
+    <AddControlDialog onAdd={addExtras} onClose={() => setAdding(false)} />
+  );
+
   if (isLandscape) {
     const pictureWidth = Math.min(availableWidth, availableHeight * (GBA_WIDTH / GBA_HEIGHT));
     const pictureHeight = pictureWidth * (GBA_HEIGHT / GBA_WIDTH);
-    const panelWidth = Math.min(availableWidth - 16, LANDSCAPE_PANEL_WIDTH * scale);
 
     return (
       <View className="flex-1 bg-black">
@@ -645,13 +771,12 @@ export default function ControlEditorScreen() {
           ) : null}
           {controls}
 
-          <View
-            className="absolute gap-1 rounded-[18px] border border-control-border bg-card p-3"
-            style={{
-              left: (availableWidth - panelWidth) / 2,
-              top: canvas.originY + LANDSCAPE_PANEL_TOP * scale,
-              width: panelWidth,
-            }}>
+          <FloatingPanel
+            left={panelLeft}
+            top={panelTop}
+            width={panelWidth}
+            onDrag={(left, top) => setPanelSpot({ left, top })}
+            onHeight={setPanelHeight}>
             <View className="flex-row items-center gap-2">
               <IconAction label="Close" onPress={() => router.back()}>
                 <X size={20} color={palette.secondary} />
@@ -675,7 +800,7 @@ export default function ControlEditorScreen() {
               {opacitySlider}
               {opacityValue}
             </View>
-            <View className="flex-row items-center gap-3 px-1">
+            <View className="flex-row items-center gap-2 px-1">
               <Toggle
                 label="Snap to grid"
                 value={snapToGrid}
@@ -684,15 +809,30 @@ export default function ControlEditorScreen() {
               <Text className="flex-1 font-inter-semibold text-[14px] text-foreground">
                 Snap to grid
               </Text>
+              {addButton}
               <IconAction label="Undo" disabled={history.length === 0} onPress={undo}>
                 <Undo2 size={20} color={palette.secondary} />
               </IconAction>
               <ResetButton onPress={() => setConfirmingReset(true)} />
             </View>
+            {selectedExtra && (
+              <View className="flex-row items-center gap-3 px-1">
+                <Text
+                  className="flex-1 font-inter-semibold text-[14px] text-foreground"
+                  numberOfLines={1}>
+                  {controlName(selectedExtra)}
+                </Text>
+                <DeleteControlButton
+                  label={controlName(selectedExtra)}
+                  onPress={() => deleteExtra(selectedExtra.id)}
+                />
+              </View>
+            )}
             {failureMessage}
-          </View>
+          </FloatingPanel>
         </View>
         {resetDialog}
+        {addDialog}
       </View>
     );
   }
@@ -768,11 +908,11 @@ export default function ControlEditorScreen() {
               <Text
                 className="w-20 font-inter-semibold text-[15px] text-foreground"
                 numberOfLines={1}>
-                {selected.label} size
+                {controlName(selected)} size
               </Text>
               <Slider
                 key={selected.id}
-                label={`${selected.label} size`}
+                label={`${controlName(selected)} size`}
                 value={placedControl(selected, current).size}
                 {...sizeLimits(selected)}
                 step={snapToGrid ? GRID_DP : 1}
@@ -786,6 +926,12 @@ export default function ControlEditorScreen() {
               <Text className="w-14 text-right font-mono text-[14px] text-secondary">
                 {Math.round(placedControl(selected, current).size)} dp
               </Text>
+              {selectedExtra && (
+                <DeleteControlButton
+                  label={controlName(selectedExtra)}
+                  onPress={() => deleteExtra(selectedExtra.id)}
+                />
+              )}
             </>
           ) : (
             <Text className="font-inter text-[14px] text-secondary">
@@ -798,19 +944,22 @@ export default function ControlEditorScreen() {
           {opacitySlider}
           {opacityValue}
         </View>
-        <View className="h-12 flex-row items-center gap-3">
+        <View className="h-12 flex-row items-center gap-2">
           <Toggle
             label="Snap to grid"
             value={snapToGrid}
             onChange={() => setSnapToGrid(!snapToGrid)}
           />
-          <Text className="font-inter-semibold text-[15px] text-foreground">Snap to grid</Text>
-          <Text className="flex-1 font-mono text-[13px] text-secondary">{GRID_DP} dp</Text>
+          <Text className="flex-1 font-inter-semibold text-[15px] text-foreground">
+            Snap to grid
+          </Text>
+          {addButton}
           <ResetButton onPress={() => setConfirmingReset(true)} />
         </View>
         {failureMessage}
       </View>
       {resetDialog}
+      {addDialog}
     </View>
   );
 }

@@ -65,6 +65,8 @@ declare class KrsEmulatorNativeModule extends NativeModule<KrsEmulatorEvents> {
   reset(): Promise<void>;
   /** Writes the current picture to the named state's thumbnail file. */
   captureThumbnail(name: string, scale?: number): Promise<void>;
+  /** Saves the current picture to Pictures/KRS32. Needs Android 10 or newer. */
+  saveScreenshot(): Promise<void>;
   /** Replaces the active cheats. Each entry is one line in a format the core understands. */
   setCheats(lines: string[]): Promise<void>;
   /** When the named state was written, in milliseconds, or null if it doesn't exist. */

@@ -32,6 +32,7 @@ import {
   takeLoadedLabel,
   UNDO_STATE,
 } from '@/lib/saveStates';
+import { loadControlLayout } from '@/lib/controlLayout';
 import { loadControllerMapping } from '@/lib/controllerMapping';
 import { loadSettings, saveSettings } from '@/lib/setup';
 import { applyVideoSettings } from '@/lib/video';
@@ -103,7 +104,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
   const [playedSeconds, setPlayedSeconds] = useState(game.playSeconds ?? 0);
   const [speed, setSpeed] = useState(() => loadSettings().fastForwardSpeed);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [controlLayout, setControlLayout] = useState(() => loadSettings().controlLayout);
+  const [controlLayout, setControlLayout] = useState(loadControlLayout);
   const [stretchVideo, setStretchVideo] = useState(
     () => loadSettings().video.aspect === 'stretch'
   );
@@ -194,7 +195,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       if (!inSubScreen.current) return;
       inSubScreen.current = false;
       editingControls.current = false;
-      setControlLayout(loadSettings().controlLayout);
+      setControlLayout(loadControlLayout());
       setStretchVideo(loadSettings().video.aspect === 'stretch');
       const loadedLabel = takeLoadedLabel();
       if (loadedLabel !== null) {
@@ -288,6 +289,12 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
         openMenu();
         return;
       }
+      if (action === 'SCREENSHOT') {
+        KrsEmulator.saveScreenshot()
+          .then(() => showToast({ message: 'Screenshot saved to Pictures/KRS32' }))
+          .catch(() => showToast({ message: "Couldn't save the screenshot." }));
+        return;
+      }
       const slot = loadGameMeta()[id]?.quickSlot ?? DEFAULT_QUICK_SLOT;
       const state = slotStateName(slot);
       if (action === 'QUICK_SAVE') {
@@ -367,7 +374,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       <StatusBar hidden />
       <KrsEmulatorView
         title={title}
-        controlLayout={controlLayout ? JSON.stringify(controlLayout) : ''}
+        controlLayout={JSON.stringify(controlLayout)}
         stretchVideo={stretchVideo}
         fastForwardSpeed={speed}
         onMenuPress={openMenu}

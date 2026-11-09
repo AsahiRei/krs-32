@@ -1,7 +1,11 @@
 package expo.modules.krsemulator
 
+import android.content.ContentValues
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -12,6 +16,8 @@ import java.security.MessageDigest
 private const val GAME_WIDTH = 240
 private const val GAME_HEIGHT = 160
 private const val UNDO_STATE = "undo"
+private const val SCREENSHOT_SCALE = 4
+private const val SCREENSHOT_FOLDER = "KRS32"
 
 class KrsEmulatorModule : Module() {
   private var stateDir: File? = null
@@ -27,13 +33,40 @@ class KrsEmulatorModule : Module() {
     }
   }
 
-  private fun writeThumbnail(name: String, scale: Int = 1) {
-    val frame = KrsEmulatorNative.getLastFrame() ?: return
+  private fun gameBitmap(scale: Int): Bitmap? {
+    val frame = KrsEmulatorNative.getLastFrame() ?: return null
     val source = Bitmap.createBitmap(GAME_WIDTH, GAME_HEIGHT, Bitmap.Config.RGB_565)
     source.copyPixelsFromBuffer(ByteBuffer.wrap(frame))
-    // Enlarging without filtering keeps the pixels square for the filter previews.
+    // Enlarging without filtering keeps the pixels square.
     val bitmap = Bitmap.createScaledBitmap(source, GAME_WIDTH * scale, GAME_HEIGHT * scale, false)
     if (bitmap !== source) source.recycle()
+    return bitmap
+  }
+
+  private fun saveToGallery(bitmap: Bitmap) {
+    // Scoped storage lets an app add its own pictures without a permission from Android 10 on.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+      throw CodedException("Screenshots need Android 10 or newer.")
+    }
+    val resolver = requireNotNull(appContext.reactContext).contentResolver
+    val values = ContentValues().apply {
+      put(MediaStore.Images.Media.DISPLAY_NAME, "krs32-${System.currentTimeMillis()}.png")
+      put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+      put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$SCREENSHOT_FOLDER")
+    }
+    val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    val uri = resolver.insert(collection, values) ?: throw CodedException("Couldn't save the screenshot.")
+    try {
+      val stream = resolver.openOutputStream(uri) ?: throw CodedException("Couldn't save the screenshot.")
+      stream.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    } catch (cause: Exception) {
+      resolver.delete(uri, null, null)
+      throw cause
+    }
+  }
+
+  private fun writeThumbnail(name: String, scale: Int = 1) {
+    val bitmap = gameBitmap(scale) ?: return
     val target = File(stateFile(name).parentFile, "$name.png")
     val temp = File(target.parentFile, "$name.png.tmp")
     temp.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -144,6 +177,15 @@ class KrsEmulatorModule : Module() {
 
     AsyncFunction("captureThumbnail") { name: String, scale: Int? ->
       writeThumbnail(name, scale ?: 1)
+    }
+
+    AsyncFunction("saveScreenshot") {
+      val bitmap = gameBitmap(SCREENSHOT_SCALE) ?: throw CodedException("There's no picture to save yet.")
+      try {
+        saveToGallery(bitmap)
+      } finally {
+        bitmap.recycle()
+      }
     }
 
     AsyncFunction("setCheats") { lines: List<String> ->

@@ -50,6 +50,27 @@ private const val TRACK_MAX_SPREAD = 1.5f
 private const val TITLE_MAX_WIDTH = 216f
 private const val STATS_INTERVAL_MS = 1000L
 private const val PICTURE_ASPECT = 1.5f
+private const val MAX_EXTRAS = 16
+private const val ACTION_FAST_FORWARD = "FAST_FORWARD"
+private const val TURBO_RING_WIDTH = 2f
+private const val EXTRA_LABEL_HEIGHT_SHARE = 1f / 3f
+private const val EXTRA_LABEL_WIDTH_SHARE = 0.8f
+
+// Half a turbo cycle: ten presses a second, each spanning several frames so games register it.
+private const val TURBO_HALF_PERIOD_MS = 50L
+
+private val EXTRA_BUTTON_IDS = mapOf(
+  "A" to A,
+  "B" to B,
+  "L" to L,
+  "R" to R,
+  "START" to START,
+  "SELECT" to SELECT,
+  "UP" to UP,
+  "DOWN" to DOWN,
+  "LEFT" to LEFT,
+  "RIGHT" to RIGHT,
+)
 
 private val FILL = Color.parseColor("#1B1B20")
 private val BORDER = Color.parseColor("#33333B")
@@ -60,6 +81,16 @@ private val ON_ACCENT = Color.parseColor("#0B0B0E")
 private val FOREGROUND = Color.parseColor("#F3EFE7")
 private val SECONDARY = Color.parseColor("#BDB9B0")
 private val DOT = Color.parseColor("#3A3A42")
+private val TURBO = Color.parseColor("#FF7A7A")
+
+/** A button the player added in the control editor. */
+private class ExtraButton(
+  val rect: RectF,
+  val label: String,
+  val buttons: Int,
+  val turbo: Boolean,
+  val action: String?,
+)
 
 /** Positions in design units; the view scales the whole layout to fit its size. */
 private class PlayerLayout(
@@ -82,6 +113,7 @@ private class PlayerLayout(
   val editableTop: Float,
   val dpadScale: Float = 1f,
   val opacity: Float = 1f,
+  val extras: List<ExtraButton> = emptyList(),
 ) {
   val isPortrait: Boolean get() = frame != null
 }
@@ -101,6 +133,31 @@ private fun PointF.placed(saved: JSONObject?): PointF =
 
 private fun JSONObject?.radius(fallback: Float): Float =
   if (this == null) fallback else getDouble("size").toFloat() / 2
+
+private fun parseExtras(saved: JSONObject): List<ExtraButton> {
+  val list = saved.optJSONArray("extras") ?: return emptyList()
+  val moved = saved.optJSONObject("controls")
+  return List(min(list.length(), MAX_EXTRAS)) { index ->
+    val item = list.getJSONObject(index)
+    val x = item.getDouble("x").toFloat()
+    val y = item.getDouble("y").toFloat()
+    val halfWidth = item.getDouble("size").toFloat() / 2
+    val halfHeight = halfWidth / item.getDouble("aspect").toFloat()
+    val names = item.getJSONArray("buttons")
+    var buttons = 0
+    for (name in 0 until names.length()) {
+      EXTRA_BUTTON_IDS[names.getString(name)]?.let { buttons = buttons or (1 shl it) }
+    }
+    ExtraButton(
+      rect = RectF(x - halfWidth, y - halfHeight, x + halfWidth, y + halfHeight)
+        .placed(moved?.optJSONObject(item.getString("id"))),
+      label = item.getString("label"),
+      buttons = buttons,
+      turbo = item.getBoolean("turbo"),
+      action = item.optString("action").takeIf { it.isNotEmpty() },
+    )
+  }
+}
 
 private fun PlayerLayout.withSaved(saved: JSONObject?): PlayerLayout {
   if (saved == null) return this
@@ -126,6 +183,7 @@ private fun PlayerLayout.withSaved(saved: JSONObject?): PlayerLayout {
     editableTop = editableTop,
     dpadScale = control("DPAD")?.let { it.getDouble("size").toFloat() / (DPAD_HALF_LENGTH * 2) } ?: 1f,
     opacity = saved.optDouble("opacity", opacity.toDouble()).toFloat(),
+    extras = parseExtras(saved),
   )
 }
 
@@ -187,15 +245,15 @@ private val PORTRAIT = PlayerLayout(
   height = 772f,
   game = RectF(23f, 20f, 389f, 264f),
   frame = RectF(16f, 12.5f, 396f, 271.5f),
-  shoulderL = RectF(23.5f, 364f, 159f, 420f),
-  shoulderR = RectF(253f, 364f, 389f, 420f),
-  select = RectF(98.5f, 704f, 198.5f, 752f),
-  start = RectF(214.5f, 704f, 314.5f, 752f),
+  shoulderL = RectF(12f, 408f, 108f, 456f),
+  shoulderR = RectF(304f, 408f, 400f, 456f),
+  select = RectF(108f, 716f, 196f, 760f),
+  start = RectF(216f, 716f, 304f, 760f),
   menu = RectF(23.5f, 284f, 71f, 332f),
   fastForward = RectF(301f, 284f, 389f, 332f),
-  dpad = PointF(119.25f, 552f),
-  buttonA = PointF(351f, 512.5f),
-  buttonB = PointF(288.5f, 578f),
+  dpad = PointF(108f, 588f),
+  buttonA = PointF(358f, 540f),
+  buttonB = PointF(280f, 604f),
   radiusA = 36f,
   radiusB = 38f,
   titleCenter = PointF(186f, 308f),
@@ -207,15 +265,16 @@ private val LANDSCAPE = PlayerLayout(
   height = 412f,
   game = RectF(229f, 52.5f, 688f, 358.5f),
   frame = null,
-  shoulderL = RectF(44f, 16f, 172f, 68f),
-  shoulderR = RectF(745f, 16f, 873f, 68f),
-  select = RectF(44f, 322f, 132f, 370f),
-  start = RectF(701f, 322f, 789f, 370f),
-  menu = RectF(801f, 322f, 873f, 370f),
-  fastForward = RectF(144f, 322f, 216f, 370f),
-  dpad = PointF(131.5f, 191.5f),
-  buttonA = PointF(841f, 138f),
-  buttonB = PointF(778f, 204.5f),
+  shoulderL = RectF(4f, 4f, 128f, 56f),
+  shoulderR = RectF(789f, 4f, 913f, 56f),
+  // Select and Start sit in the strip below the picture, so they don't cover the game.
+  select = RectF(373f, 362f, 453f, 402f),
+  start = RectF(464f, 362f, 544f, 402f),
+  menu = RectF(546f, 6f, 618f, 54f),
+  fastForward = RectF(289f, 6f, 361f, 54f),
+  dpad = PointF(140f, 306f),
+  buttonA = PointF(832f, 362f),
+  buttonB = PointF(704f, 362f),
   radiusA = 38f,
   radiusB = 38f,
   titleCenter = null,
@@ -266,6 +325,10 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
   private var originX = 0f
   private var originY = 0f
   private var mask = 0
+  private var extrasDown = 0
+  private var sentButtons = 0
+  private var turboRunning = false
+  private var turboPressed = false
   private var fastForward = false
   private var fastForwardLabel = "2×"
   private var title = ""
@@ -304,6 +367,14 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
     }
   }
 
+  private val turboTicker = object : Runnable {
+    override fun run() {
+      turboPressed = !turboPressed
+      sendButtons()
+      postDelayed(this, TURBO_HALF_PERIOD_MS)
+    }
+  }
+
   init {
     contentDescription = "Game controls"
   }
@@ -325,6 +396,12 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
 
   private fun applyLayout(w: Int, h: Int) {
     val base = layoutFor(w, h)
+    // Held bits index the old list of added buttons, so they can't carry over to a new one.
+    if (extrasDown != 0) {
+      extrasDown = 0
+      updateTurbo()
+      sendButtons()
+    }
     layout = base.withSaved(savedLayouts?.optJSONObject(if (base.isPortrait) "portrait" else "landscape"))
     scale = scaleFor(base, w, h)
     originX = offsetX(base, w, scale)
@@ -354,9 +431,14 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
   override fun onDetachedFromWindow() {
     super.onDetachedFromWindow()
     removeCallbacks(statsTicker)
+    removeCallbacks(turboTicker)
+    turboRunning = false
+    turboPressed = false
     // Fast-forward stays as it is: this also runs when a screen opens on top of the Player.
     // Starting a game is what resets it.
     mask = 0
+    extrasDown = 0
+    sentButtons = 0
     KrsEmulatorNative.setButtons(0)
   }
 
@@ -387,6 +469,10 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
     if (!layout.isPortrait) {
       drawMenuButton(canvas)
       drawFastForward(canvas)
+    }
+    layout.extras.forEachIndexed { index, extra ->
+      val latched = extra.action == ACTION_FAST_FORWARD && fastForward
+      drawExtra(canvas, extra, isExtraDown(index) || latched)
     }
     canvas.restore()
 
@@ -548,6 +634,24 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
     drawCenteredText(canvas, label, center.x, center.y)
   }
 
+  private fun drawExtra(canvas: Canvas, extra: ExtraButton, pressed: Boolean) {
+    val rect = extra.rect
+    val corner = rect.height() / 2
+    drawPanel(canvas, rect, corner, pressed)
+    if (extra.turbo && !pressed) {
+      outline.color = TURBO
+      outline.strokeWidth = TURBO_RING_WIDTH
+      canvas.drawRoundRect(rect, corner, corner, outline)
+    }
+    text.typeface = fontBold
+    text.textSize = rect.height() * EXTRA_LABEL_HEIGHT_SHARE
+    val available = rect.width() * EXTRA_LABEL_WIDTH_SHARE
+    val measured = text.measureText(extra.label)
+    if (measured > available) text.textSize *= available / measured
+    text.color = if (pressed) ON_ACCENT else if (extra.turbo) TURBO else FOREGROUND
+    drawCenteredText(canvas, extra.label, rect.centerX(), rect.centerY())
+  }
+
   private fun drawMenuButton(canvas: Canvas) {
     val rect = layout.menu
     val pressed = isDown(MENU)
@@ -603,11 +707,16 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
     parent?.requestDisallowInterceptTouchEvent(true)
 
     var next = 0
+    var nextExtras = 0
     val action = event.actionMasked
     if (action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) {
       val lifted = if (action == MotionEvent.ACTION_POINTER_UP) event.actionIndex else -1
       for (index in 0 until event.pointerCount) {
-        if (index != lifted) next = next or hitTest(designX(event, index), designY(event, index))
+        if (index == lifted) continue
+        val x = designX(event, index)
+        val y = designY(event, index)
+        val extra = extraAt(x, y)
+        if (extra >= 0) nextExtras = nextExtras or (1 shl extra) else next = next or hitTest(x, y)
       }
     }
 
@@ -615,24 +724,67 @@ internal class KrsControlsView(context: Context, private val onMenuPress: () -> 
       val index = event.actionIndex
       val x = designX(event, index)
       val y = designY(event, index)
-      if (inButton(layout.fastForward, x, y)) {
-        fastForward = !fastForward
-        KrsEmulatorNative.setFastForward(fastForward)
+      val extra = extraAt(x, y)
+      if (extra >= 0) {
+        val extraAction = layout.extras[extra].action
+        if (extraAction == ACTION_FAST_FORWARD) {
+          toggleFastForward()
+        } else if (extraAction != null) {
+          KrsInput.onAction?.invoke(extraAction)
+        }
+      } else if (inButton(layout.fastForward, x, y)) {
+        toggleFastForward()
       } else if (inButton(layout.menu, x, y)) {
         onMenuPress()
       }
     }
 
-    if (next != mask) {
-      if (next and JOYPAD_MASK != mask and JOYPAD_MASK) {
-        KrsEmulatorNative.setButtons(next and JOYPAD_MASK)
-      }
+    if (next != mask || nextExtras != extrasDown) {
       mask = next
+      extrasDown = nextExtras
+      updateTurbo()
+      sendButtons()
       invalidate()
     } else if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
       invalidate()
     }
     return true
+  }
+
+  private fun toggleFastForward() {
+    fastForward = !fastForward
+    KrsEmulatorNative.setFastForward(fastForward)
+  }
+
+  private fun isExtraDown(index: Int) = extrasDown and (1 shl index) != 0
+
+  /** The topmost added button under a point, or -1. They draw last, so they take the touch first. */
+  private fun extraAt(x: Float, y: Float): Int {
+    for (index in layout.extras.indices.reversed()) {
+      if (inButton(layout.extras[index].rect, x, y)) return index
+    }
+    return -1
+  }
+
+  private fun updateTurbo() {
+    var held = false
+    layout.extras.forEachIndexed { index, extra -> if (extra.turbo && isExtraDown(index)) held = true }
+    if (held == turboRunning) return
+    turboRunning = held
+    removeCallbacks(turboTicker)
+    turboPressed = held
+    if (held) postDelayed(turboTicker, TURBO_HALF_PERIOD_MS)
+  }
+
+  private fun sendButtons() {
+    var buttons = mask and JOYPAD_MASK
+    layout.extras.forEachIndexed { index, extra ->
+      if (isExtraDown(index) && (!extra.turbo || turboPressed)) buttons = buttons or extra.buttons
+    }
+    if (buttons != sentButtons) {
+      sentButtons = buttons
+      KrsEmulatorNative.setButtons(buttons)
+    }
   }
 
   private fun designX(event: MotionEvent, index: Int) = (event.getX(index) - originX) / scale
