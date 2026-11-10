@@ -11,6 +11,8 @@ export type GameMeta = {
   quickSlot?: number;
   /** A user-chosen cover, stored in the app's covers folder. */
   coverFile?: string;
+  /** Set once an online cover search has run, so the library doesn't repeat it every scan. */
+  coverSearched?: boolean;
 };
 
 export type GameMetaMap = Record<string, GameMeta>;

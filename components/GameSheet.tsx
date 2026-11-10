@@ -28,7 +28,7 @@ import {
   type Game,
 } from '@/lib/library';
 import { loadCheats } from '@/lib/cheats';
-import { chooseCover, removeCover } from '@/lib/covers';
+import { chooseCover, downloadCover, hasCoverSearch, removeCover } from '@/lib/covers';
 import { countUsedSlots, getRomSaveId, SLOT_COUNT } from '@/lib/saveStates';
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -256,6 +256,18 @@ export function GameSheet({
                 label={game.coverFile ? 'Change cover image' : 'Add cover image'}
                 onPress={() => updateCover(() => chooseCover(game.id))}
               />
+              {hasCoverSearch && (
+                <ActionRow
+                  label={coverBusy ? 'Searching for cover…' : 'Find cover online'}
+                  onPress={() =>
+                    updateCover(async () => {
+                      if (!(await downloadCover(game))) {
+                        throw new Error(`No box art found for “${game.title}”.`);
+                      }
+                    })
+                  }
+                />
+              )}
               {game.coverFile && (
                 <ActionRow
                   label="Remove cover image"

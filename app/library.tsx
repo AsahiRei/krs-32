@@ -46,7 +46,7 @@ import {
   sortGames,
   subscribeGameMeta,
 } from '@/lib/library';
-import { deleteCoverFile } from '@/lib/covers';
+import { deleteCoverFile, fetchMissingCovers } from '@/lib/covers';
 import { AUTO_STATE } from '@/lib/saveStates';
 import { chooseRomFolder, formatFolderPath, formatRomPath, loadSettings } from '@/lib/setup';
 
@@ -297,6 +297,8 @@ export default function LibraryScreen() {
         if (controller.signal.aborted) return;
         setRoms(found);
         setStatus('ready');
+        // Covers arrive through the meta subscription as each one is saved.
+        fetchMissingCovers(found, controller.signal);
       } catch {
         if (!controller.signal.aborted) setStatus('unreadable');
       }
