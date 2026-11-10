@@ -16,11 +16,18 @@ import { SetupButton } from '@/components/SetupCard';
 import { useBottomSheet } from '@/components/useBottomSheet';
 import { palette } from '@/constants/palette';
 import { formatClock } from '@/lib/library';
+import type { GameOrientation } from '@/lib/setup';
 
 const FAST_FORWARD_OPTIONS = [1.5, 2, 3, 4].map((speed) => ({
   value: speed,
   label: `${speed}×`,
 }));
+
+const ORIENTATION_OPTIONS: { value: GameOrientation; label: string }[] = [
+  { value: 'landscape', label: 'Landscape' },
+  { value: 'portrait', label: 'Portrait' },
+  { value: 'auto', label: 'Auto' },
+];
 
 function formatElapsed(totalSeconds: number) {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -86,6 +93,8 @@ type InGameMenuProps = {
   cheatsOn: number;
   fastForwardSpeed: number;
   onSelectSpeed: (speed: number) => void;
+  orientation: GameOrientation;
+  onSelectOrientation: (orientation: GameOrientation) => void;
   onOpenSaveStates: () => void;
   onOpenCheats: () => void;
   onOpenControls: () => void;
@@ -104,6 +113,8 @@ export function InGameMenu({
   cheatsOn,
   fastForwardSpeed,
   onSelectSpeed,
+  orientation,
+  onSelectOrientation,
   onOpenSaveStates,
   onOpenCheats,
   onOpenControls,
@@ -256,6 +267,17 @@ export function InGameMenu({
                   onChange={onSelectSpeed}
                   height={56}
                   labelClassName="font-mono text-[15px]"
+                />
+              </View>
+
+              <View className="gap-2.5">
+                <Text className="font-mono-medium text-[12px] tracking-[1.4px] text-secondary">
+                  SCREEN ORIENTATION
+                </Text>
+                <SegmentedControl
+                  options={ORIENTATION_OPTIONS}
+                  value={orientation}
+                  onChange={onSelectOrientation}
                 />
               </View>
 

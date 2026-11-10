@@ -1,3 +1,4 @@
+import { NavigationBar } from 'expo-navigation-bar';
 import { Redirect, type Href, router, useFocusEffect } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
@@ -34,7 +35,7 @@ import {
 } from '@/lib/saveStates';
 import { loadControlLayout } from '@/lib/controlLayout';
 import { loadControllerMapping } from '@/lib/controllerMapping';
-import { loadSettings, saveSettings } from '@/lib/setup';
+import { type GameOrientation, loadSettings, saveSettings } from '@/lib/setup';
 import { applyVideoSettings } from '@/lib/video';
 import KrsEmulator, { KrsEmulatorView } from '@/modules/krs-emulator';
 
@@ -44,6 +45,19 @@ const TOAST_RISE_PX = 10;
 const UNDO_TOAST_MS = 6000;
 
 type Toast = { message: string; onUndo?: () => void };
+
+/** A lock applies whatever the phone's auto-rotate switch says; only 'auto' follows it. */
+function applyGameOrientation(orientation: GameOrientation) {
+  const applied =
+    orientation === 'auto'
+      ? ScreenOrientation.unlockAsync()
+      : ScreenOrientation.lockAsync(
+          orientation === 'landscape'
+            ? ScreenOrientation.OrientationLock.LANDSCAPE
+            : ScreenOrientation.OrientationLock.PORTRAIT_UP
+        );
+  applied.catch(() => {});
+}
 
 function ToastView({ toast }: { toast: Toast }) {
   const [entrance] = useState(() => new Animated.Value(0));
@@ -103,6 +117,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
   const [cheatsOn, setCheatsOn] = useState(0);
   const [playedSeconds, setPlayedSeconds] = useState(game.playSeconds ?? 0);
   const [speed, setSpeed] = useState(() => loadSettings().fastForwardSpeed);
+  const [orientation, setOrientation] = useState(() => loadSettings().gameOrientation);
   const [toast, setToast] = useState<Toast | null>(null);
   const [controlLayout, setControlLayout] = useState(loadControlLayout);
   const [stretchVideo, setStretchVideo] = useState(
@@ -162,7 +177,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
 
   useFocusEffect(
     useCallback(() => {
-      ScreenOrientation.unlockAsync().catch(() => {});
+      applyGameOrientation(loadSettings().gameOrientation);
       return () => {
         // The control editor sets its own orientation, and this would run after it.
         if (editingControls.current) return;
@@ -316,6 +331,12 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
     saveSettings({ fastForwardSpeed: next }).catch(() => {});
   }
 
+  function selectOrientation(next: GameOrientation) {
+    setOrientation(next);
+    applyGameOrientation(next);
+    saveSettings({ gameOrientation: next }).catch(() => {});
+  }
+
   function openSubScreen(href: Href) {
     inSubScreen.current = true;
     setMenuOpen(false);
@@ -372,6 +393,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
   return (
     <SafeAreaView className={`flex-1 ${width > height ? 'bg-black' : 'bg-background'}`}>
       <StatusBar hidden />
+      <NavigationBar hidden />
       <KrsEmulatorView
         title={title}
         controlLayout={JSON.stringify(controlLayout)}
@@ -399,6 +421,8 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
           onOpenControls={openControlEditor}
           fastForwardSpeed={speed}
           onSelectSpeed={selectSpeed}
+          orientation={orientation}
+          onSelectOrientation={selectOrientation}
           onQuickSave={quickSave}
           onQuickLoad={quickLoad}
           onReset={() => KrsEmulator.reset()}

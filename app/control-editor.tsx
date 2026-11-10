@@ -1,3 +1,4 @@
+import { NavigationBar } from 'expo-navigation-bar';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { StatusBar } from 'expo-status-bar';
@@ -719,6 +720,7 @@ export default function ControlEditorScreen() {
     return (
       <View className="flex-1 bg-black">
         <StatusBar hidden />
+        <NavigationBar hidden />
         {insets.left > 0 && (
           <View className="absolute inset-y-0 left-0 items-center justify-center" style={{ width: insets.left }}>
             <Hatching id="hatch-left" />
@@ -842,6 +844,7 @@ export default function ControlEditorScreen() {
       className="flex-1 bg-background"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}>
       <StatusBar hidden />
+      <NavigationBar hidden />
       <View className="flex-row items-center gap-3 px-3" style={{ height: HEADER_HEIGHT }}>
         <IconAction label="Close" onPress={() => router.back()}>
           <X size={22} color={palette.secondary} />

@@ -270,9 +270,9 @@ private val LANDSCAPE = PlayerLayout(
   // Select and Start sit in the strip below the picture, so they don't cover the game.
   select = RectF(373f, 362f, 453f, 402f),
   start = RectF(464f, 362f, 544f, 402f),
-  menu = RectF(546f, 6f, 618f, 54f),
-  fastForward = RectF(289f, 6f, 361f, 54f),
-  dpad = PointF(140f, 306f),
+  menu = RectF(466.5f, 6f, 538.5f, 54f),
+  fastForward = RectF(378.5f, 6f, 450.5f, 54f),
+  dpad = PointF(100f, 306f),
   buttonA = PointF(832f, 362f),
   buttonB = PointF(704f, 362f),
   radiusA = 38f,

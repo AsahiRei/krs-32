@@ -6,10 +6,13 @@ import type { VideoSettings } from '@/lib/video';
 
 const BIOS_SIZE_BYTES = 16 * 1024;
 
+export type GameOrientation = 'landscape' | 'portrait' | 'auto';
+
 export type AppSettings = {
   setupComplete: boolean;
   romFolderUri: string | null;
   fastForwardSpeed: number;
+  gameOrientation: GameOrientation;
   controlLayout: ControlLayout | null;
   controllerMapping: ControllerMapping | null;
   video: VideoSettings;
@@ -25,6 +28,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   setupComplete: false,
   romFolderUri: null,
   fastForwardSpeed: 2,
+  gameOrientation: 'landscape',
   controlLayout: null,
   controllerMapping: null,
   video: { filter: 'original', strength: 0.4, aspect: 'native', scaling: 'fit' },
