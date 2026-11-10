@@ -4,7 +4,7 @@ import Check from 'lucide-react-native/icons/check';
 import ChevronDown from 'lucide-react-native/icons/chevron-down';
 import CircleAlert from 'lucide-react-native/icons/circle-alert';
 import X from 'lucide-react-native/icons/x';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -18,6 +18,7 @@ import {
   formatCode,
   loadCheats,
   newCheatId,
+  normalizeCodeInput,
   saveCheats,
 } from '@/lib/cheats';
 
@@ -41,16 +42,59 @@ export default function CheatEditScreen() {
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const issue = findCodeIssue(code, type, codeFocused);
-  const lineCount = codeLines(code).length;
+  // Validation and the highlighted text depend only on the code, so typing in the name field or
+  // opening the type menu doesn't redo them.
+  const lines = useMemo(() => code.split('\n'), [code]);
+  const issue = useMemo(() => findCodeIssue(code, type, codeFocused), [code, type, codeFocused]);
+  const finalIssue = useMemo(
+    () => (codeFocused ? findCodeIssue(code, type, false) : issue),
+    [code, type, codeFocused, issue]
+  );
+  const lineCount = useMemo(() => codeLines(code).length, [code]);
   const typeLabel = CHEAT_TYPES.find((option) => option.type === type)?.label;
   const otherTypes = CHEAT_TYPES.filter((option) => option.type !== type)
     .map((option) => option.label)
     .join(', ');
-  const canSave = !!name.trim() && lineCount > 0 && !findCodeIssue(code, type, false) && !saving;
-  const lines = code.split('\n');
+  const canSave = !!saveId && !!name.trim() && lineCount > 0 && !finalIssue && !saving;
+
+  // One Text for the whole gutter instead of one per line keeps long pastes cheap to render.
+  const gutter = useMemo(() => {
+    const numbers = lines.map((_, index) => index + 1);
+    if (!issue) return numbers.join('\n');
+    const before = numbers.slice(0, issue.line);
+    const after = numbers.slice(issue.line + 1);
+    return (
+      <>
+        {before.length > 0 && `${before.join('\n')}\n`}
+        <Text className="text-danger">{issue.line + 1}</Text>
+        {after.length > 0 && `\n${after.join('\n')}`}
+      </>
+    );
+  }, [lines, issue]);
+
+  const codeText = useMemo(() => {
+    const line = issue ? lines[issue.line] : undefined;
+    if (issue?.column == null || line === undefined || issue.column >= line.length) {
+      return <Text>{code}</Text>;
+    }
+    return (
+      <Text>
+        {lines.slice(0, issue.line).map((text) => `${text}\n`).join('')}
+        {line.slice(0, issue.column)}
+        <Text className="text-danger underline">{line[issue.column]}</Text>
+        {line.slice(issue.column + 1)}
+        {lines.slice(issue.line + 1).map((text) => `\n${text}`).join('')}
+      </Text>
+    );
+  }, [code, lines, issue]);
+
+  function changeCode(text: string) {
+    setFailed(false);
+    setCode(normalizeCodeInput(text));
+  }
 
   async function save() {
+    if (!saveId || saving) return;
     setSaving(true);
     setFailed(false);
     const cheat = {
@@ -60,8 +104,8 @@ export default function CheatEditScreen() {
       code: formatCode(code),
       enabled: existing?.enabled ?? true,
     };
-    const cheats = loadCheats(saveId);
     try {
+      const cheats = loadCheats(saveId);
       await saveCheats(
         saveId,
         existing ? cheats.map((item) => (item.id === cheat.id ? cheat : item)) : [...cheats, cheat]
@@ -166,17 +210,12 @@ export default function CheatEditScreen() {
                 />
               )}
               <View className="flex-row px-3" style={{ paddingVertical: CODE_PADDING_Y }}>
-                <View className="w-7">
-                  {lines.map((_, index) => (
-                    <Text
-                      key={index}
-                      className={`font-mono text-[15px] ${
-                        issue?.line === index ? 'text-danger' : 'text-muted'
-                      }`}
-                      style={{ lineHeight: CODE_LINE_HEIGHT }}>
-                      {index + 1}
-                    </Text>
-                  ))}
+                <View className={lines.length >= 100 ? 'w-9' : 'w-7'}>
+                  <Text
+                    className="font-mono text-[15px] text-muted"
+                    style={{ lineHeight: CODE_LINE_HEIGHT }}>
+                    {gutter}
+                  </Text>
                 </View>
                 <TextInput
                   multiline
@@ -188,23 +227,13 @@ export default function CheatEditScreen() {
                   placeholder="0300 1A2C 0000 0063"
                   placeholderTextColor={palette.muted}
                   cursorColor={palette.accent.DEFAULT}
-                  onChangeText={setCode}
+                  onChangeText={changeCode}
                   onFocus={() => setCodeFocused(true)}
                   onBlur={() => setCodeFocused(false)}
                   textAlignVertical="top"
                   className="flex-1 p-0 font-mono text-[15px] text-foreground"
                   style={{ lineHeight: CODE_LINE_HEIGHT, minHeight: CODE_LINE_HEIGHT * 3 }}>
-                  {issue?.column != null ? (
-                    <Text>
-                      {lines.slice(0, issue.line).map((line) => `${line}\n`).join('')}
-                      {lines[issue.line].slice(0, issue.column)}
-                      <Text className="text-danger underline">{lines[issue.line][issue.column]}</Text>
-                      {lines[issue.line].slice(issue.column + 1)}
-                      {lines.slice(issue.line + 1).map((line) => `\n${line}`).join('')}
-                    </Text>
-                  ) : (
-                    <Text>{code}</Text>
-                  )}
+                  {codeText}
                 </TextInput>
               </View>
             </View>
@@ -221,13 +250,20 @@ export default function CheatEditScreen() {
             <Text className="font-inter text-[13px] leading-[18px] text-muted">
               {type === 'auto'
                 ? 'One code per line: 12 or 16 hex digits. Spaces are ignored.'
-                : 'One code per line: 8-digit address, space, 8-digit value. Spaces inside a group are ignored.'}
+                : 'One code per line: 8-digit address, then a 4- or 8-digit value. Spaces and colons are ignored.'}
             </Text>
             {failed && (
               <Text
                 accessibilityLiveRegion="polite"
                 className="font-inter text-[13px] leading-[18px] text-danger">
                 Couldn’t save this cheat. Try again.
+              </Text>
+            )}
+            {!saveId && (
+              <Text
+                accessibilityLiveRegion="polite"
+                className="font-inter text-[13px] leading-[18px] text-danger">
+                This game’s cheats couldn’t be opened. Go back and try again.
               </Text>
             )}
           </View>

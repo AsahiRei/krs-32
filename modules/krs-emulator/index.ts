@@ -67,7 +67,10 @@ declare class KrsEmulatorNativeModule extends NativeModule<KrsEmulatorEvents> {
   captureThumbnail(name: string, scale?: number): Promise<void>;
   /** Saves the current picture to Pictures/KRS32. Needs Android 10 or newer. */
   saveScreenshot(): Promise<void>;
-  /** Replaces the active cheats. Each entry is one line in a format the core understands. */
+  /**
+   * Replaces the active cheats, undoing any ROM patches the previous ones made. Each entry is one
+   * cheat: its code lines in a format the core understands, joined with "+".
+   */
   setCheats(lines: string[]): Promise<void>;
   /** When the named state was written, in milliseconds, or null if it doesn't exist. */
   getStateTime(name: string): number | null;

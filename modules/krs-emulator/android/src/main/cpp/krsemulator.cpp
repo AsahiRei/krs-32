@@ -831,15 +831,27 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_getLastFrame(JNIEnv *env, jobjec
 extern "C" JNIEXPORT jboolean JNICALL
 Java_expo_modules_krsemulator_KrsEmulatorNative_setCheats(JNIEnv *env, jobject,
                                                           jobjectArray lines) {
+  if (lines == nullptr) return JNI_FALSE;
   std::vector<std::string> codes;
   const jsize count = env->GetArrayLength(lines);
   codes.reserve(static_cast<size_t>(count));
   for (jsize i = 0; i < count; i++) {
     auto line = static_cast<jstring>(env->GetObjectArrayElement(lines, i));
-    codes.push_back(toString(env, line));
+    if (line == nullptr) continue;
+    const char *chars = env->GetStringUTFChars(line, nullptr);
+    if (chars != nullptr) {
+      // One entry per cheat: up to 256 lines of at most 17 characters, joined with '+'.
+      std::string code(chars);
+      if (!code.empty() && code.size() <= 256 * 18) codes.push_back(std::move(code));
+      env->ReleaseStringUTFChars(line, chars);
+    }
     env->DeleteLocalRef(line);
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      return JNI_FALSE;
+    }
   }
-  const bool applied = runOnEmulatorThread([codes] {
+  const bool applied = runOnEmulatorThread([codes = std::move(codes)] {
     retro_cheat_reset();
     for (size_t i = 0; i < codes.size(); i++) {
       retro_cheat_set(static_cast<unsigned>(i), true, codes[i].c_str());

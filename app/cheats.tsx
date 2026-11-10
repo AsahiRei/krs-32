@@ -3,7 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import CircleAlert from 'lucide-react-native/icons/circle-alert';
 import Plus from 'lucide-react-native/icons/plus';
 import Trash2 from 'lucide-react-native/icons/trash-2';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,7 +11,7 @@ import { ScreenHeader } from '@/components/ScreenHeader';
 import { Toggle } from '@/components/Toggle';
 import { palette } from '@/constants/palette';
 import {
-  activeCheatLines,
+  activeCheatCodes,
   type Cheat,
   cheatTag,
   codeLines,
@@ -121,12 +121,29 @@ function CheatsScreen({ game, inGame }: { game: Game; inGame: boolean }) {
   const [cheats, setCheats] = useState<Cheat[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
 
+  // Rapid toggles would each queue a full reset-and-reapply on the emulator thread. Only one
+  // call runs at a time, and anything toggled meanwhile is sent once as the newest list.
+  const applying = useRef(false);
+  const pendingApply = useRef<Cheat[] | null>(null);
   const applyToGame = useCallback(
-    (list: Cheat[]) => {
+    async (list: Cheat[]) => {
       if (!inGame) return;
-      KrsEmulator.setCheats(activeCheatLines(list)).catch(() =>
-        setFailure('Couldn’t apply the cheats to the game.')
-      );
+      pendingApply.current = list;
+      if (applying.current) return;
+      applying.current = true;
+      try {
+        while (pendingApply.current) {
+          const next = pendingApply.current;
+          pendingApply.current = null;
+          try {
+            await KrsEmulator.setCheats(activeCheatCodes(next));
+          } catch {
+            setFailure('Couldn’t apply the cheats to the game. Close this screen and try again.');
+          }
+        }
+      } finally {
+        applying.current = false;
+      }
     },
     [inGame]
   );
@@ -155,7 +172,9 @@ function CheatsScreen({ game, inGame }: { game: Game; inGame: boolean }) {
     if (!saveId) return;
     setCheats(next);
     applyToGame(next);
-    saveCheats(saveId, next).catch(() => setFailure('Couldn’t save your cheats.'));
+    saveCheats(saveId, next).catch(() =>
+      setFailure('Couldn’t save your cheats. Your change will be lost when you leave this screen.')
+    );
   }
 
   function openEditor(cheatId?: string) {

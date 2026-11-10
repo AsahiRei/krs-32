@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { InGameMenu } from '@/components/InGameMenu';
 import { SetupButton } from '@/components/SetupCard';
-import { activeCheatLines, loadCheats } from '@/lib/cheats';
+import { activeCheatCodes, loadCheats } from '@/lib/cheats';
 import {
   getPlayRequest,
   loadGameMeta,
@@ -254,7 +254,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       KrsEmulator.setControllerMapping(JSON.stringify(loadControllerMapping()));
       await applyVideoSettings(loadSettings().video).catch(() => {});
       if (saveId.current) {
-        await KrsEmulator.setCheats(activeCheatLines(loadCheats(saveId.current))).catch(() =>
+        await KrsEmulator.setCheats(activeCheatCodes(loadCheats(saveId.current))).catch(() =>
           showToast({ message: "Couldn't apply your cheats." })
         );
       }

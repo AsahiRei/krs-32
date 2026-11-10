@@ -21,6 +21,9 @@ FetchContent_Declare(
   mgba
   URL https://github.com/mgba-emu/mgba/archive/refs/tags/0.10.5.tar.gz
   URL_HASH SHA256=91d6fbd32abcbdf030d58d3f562de25ebbc9d56040d513ff8e5c19bee9dacf14
+  # Fixes libretro cheat handling; see the script for details.
+  PATCH_COMMAND ${CMAKE_COMMAND} -DMGBA_SOURCE_DIR=<SOURCE_DIR>
+    -P ${CMAKE_CURRENT_LIST_DIR}/patches/mgba-cheats.cmake
 )
 FetchContent_MakeAvailable(mgba)
 
