@@ -31,7 +31,9 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr size_t kMaxRomSize = 32 * 1024 * 1024;
+// The GBA addresses at most 32 MB of ROM; mGBA ignores anything past that, so slightly
+// oversized (padded) dumps still load. Beyond this it's surely not a GBA ROM.
+constexpr size_t kMaxRomFileSize = 64 * 1024 * 1024;
 constexpr int kTextureSize = 256;
 constexpr int kGameWidth = 240;
 constexpr int kGameHeight = 160;
@@ -370,6 +372,8 @@ std::atomic<uint64_t> gSaveBytes{0};
 
 std::string gSavePath;
 std::string gSystemDir;
+// Set when the ROM's header would make the real BIOS hang, so the core boots the game directly.
+bool gSkipBios = false;
 std::vector<uint8_t> gLastFrame;
 int gLastFrameWidth = 0;
 int gLastFrameHeight = 0;
@@ -439,6 +443,15 @@ bool environment(unsigned command, void *data) {
   if (command == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY) {
     *static_cast<const char **>(data) = gSystemDir.c_str();
     return true;
+  }
+  if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
+    auto *variable = static_cast<retro_variable *>(data);
+    if (gSkipBios && variable->key && std::strcmp(variable->key, "mgba_skip_bios") == 0) {
+      variable->value = "ON";
+      return true;
+    }
+    variable->value = nullptr;
+    return false;
   }
   return false;
 }
@@ -665,20 +678,22 @@ void stopEmulator() {
   gQuit.store(false);
 }
 
+// Only rejects files that can't be a GBA ROM at all. mGBA itself decides whether it can run the
+// rest: ROM hacks and translations often ship with a stale header checksum or a cleared fixed
+// byte, and mGBA plays those fine (only the real BIOS refuses them, see headerIsValid).
 std::string validateRom(const std::vector<uint8_t> &rom) {
-  if (rom.size() < 0xC0 || rom.size() > kMaxRomSize) {
-    return "This file is not a valid GBA ROM (wrong size).";
-  }
-  if (rom[0xB2] != 0x96) {
-    return "This file is not a valid GBA ROM (bad header).";
-  }
+  if (rom.size() < 0xC0) return "This file is not a valid GBA ROM (too small).";
+  if (rom.size() > kMaxRomFileSize) return "This file is not a valid GBA ROM (too large).";
+  return "";
+}
+
+// Whether the real GBA BIOS would accept this header. It locks up on a bad one.
+bool headerIsValid(const std::vector<uint8_t> &rom) {
+  if (rom[0xB2] != 0x96) return false;
   int checksum = 0;
   for (size_t i = 0xA0; i <= 0xBC; i++) checksum -= rom[i];
   checksum = (checksum - 0x19) & 0xFF;
-  if (checksum != rom[0xBD]) {
-    return "This ROM's header is corrupt (checksum mismatch).";
-  }
-  return "";
+  return checksum == rom[0xBD];
 }
 
 std::string toString(JNIEnv *env, jstring value) {
@@ -733,6 +748,8 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_start(JNIEnv *env, jobject, jbyt
   if (!invalid.empty()) return env->NewStringUTF(invalid.c_str());
 
   stopEmulator();
+  gSkipBios = !headerIsValid(rom);
+  if (gSkipBios) LOGI("ROM header fails the BIOS check; booting without the BIOS intro");
   gSavePath = toString(env, savePath);
   gSystemDir = toString(env, systemDir);
   gPaused.store(false);
