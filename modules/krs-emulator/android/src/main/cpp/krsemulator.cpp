@@ -287,6 +287,8 @@ struct ScreenRect {
 std::mutex gScreenRectsMutex;
 ScreenRect gScreenRects[2];
 bool gScreenRectsSet = false;
+// Draws the touchscreen before the top screen, so the top screen can pop up over it.
+bool gTouchScreenFirst = false;
 
 // The pixel format the core asked for. Only the emulator thread touches it.
 retro_pixel_format gPixelFormat = RETRO_PIXEL_FORMAT_RGB565;
@@ -453,15 +455,19 @@ class Renderer {
     const GLfloat maxU = static_cast<GLfloat>(frame.width) / textureWidth;
     ScreenRect screens[2];
     bool split = false;
+    bool touchFirst = false;
     if (gSystem == System::Nds) {
       std::lock_guard<std::mutex> lock(gScreenRectsMutex);
       split = gScreenRectsSet;
+      touchFirst = gTouchScreenFirst;
       screens[0] = gScreenRects[0];
       screens[1] = gScreenRects[1];
     }
     if (split) {
       // Each half of the stacked frame goes into its own rectangle.
-      for (int half = 0; half < 2; ++half) {
+      // The later one draws on top, which is how a pop-up screen covers the other.
+      for (int step = 0; step < 2; ++step) {
+        const int half = touchFirst ? 1 - step : step;
         const ScreenRect &screen = screens[half];
         if (screen.width <= 0 || screen.height <= 0) continue;
         glViewport(static_cast<GLint>(screen.left),
@@ -1226,16 +1232,19 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_setVideoSettings(JNIEnv *, jobje
 }
 
 // Where the DS's top and bottom screens go in the surface: left, top, width and height in pixels
-// for each, top screen first. A zero width hides that screen. Null goes back to one picture.
+// for each, top screen first. A zero width hides that screen. An optional ninth value, when not
+// zero, draws the touchscreen first so the top screen goes over it. Null goes back to one picture.
 extern "C" JNIEXPORT void JNICALL
 Java_expo_modules_krsemulator_KrsEmulatorNative_setScreenRects(JNIEnv *env, jobject,
                                                                jfloatArray rects) {
   {
     std::lock_guard<std::mutex> lock(gScreenRectsMutex);
-    gScreenRectsSet = rects != nullptr && env->GetArrayLength(rects) >= 8;
+    const jsize count = rects != nullptr ? env->GetArrayLength(rects) : 0;
+    gScreenRectsSet = count >= 8;
     if (gScreenRectsSet) {
-      float values[8];
-      env->GetFloatArrayRegion(rects, 0, 8, values);
+      float values[9] = {};
+      env->GetFloatArrayRegion(rects, 0, count >= 9 ? 9 : 8, values);
+      gTouchScreenFirst = values[8] != 0;
       for (int screen = 0; screen < 2; ++screen) {
         gScreenRects[screen] = {values[screen * 4], values[screen * 4 + 1],
                                 values[screen * 4 + 2], values[screen * 4 + 3]};

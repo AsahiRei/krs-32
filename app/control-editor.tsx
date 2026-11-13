@@ -31,7 +31,7 @@ import {
   controlHeight,
   controlName,
   createExtraControls,
-  EMPTY_LAYOUT,
+  emptyLayout,
   type ExtraBinding,
   extraControls,
   fitControl,
@@ -47,6 +47,7 @@ import {
   sizeLimits,
   withoutExtra,
 } from '@/lib/controlLayout';
+import type { GameSystem } from '@/lib/systems';
 import { getPlayRequest } from '@/lib/library';
 import { getRomSaveId, PREVIEW_THUMBNAIL, readPreviewUri } from '@/lib/saveStates';
 import KrsEmulator, { type ControlDefault, type OrientationDefaults } from '@/modules/krs-emulator';
@@ -60,8 +61,11 @@ const LANDSCAPE_PANEL_TOP = 68;
 // New buttons appear on whichever side of the floating panel has room, so it can't hide them.
 const LANDSCAPE_SPAWN_Y_BELOW_PANEL = 336;
 const LANDSCAPE_SPAWN_Y_ABOVE_PANEL = 80;
-const GBA_WIDTH = 240;
-const GBA_HEIGHT = 160;
+// The game picture each system produces; the DS's is its two screens stacked.
+const PICTURE_SIZE: Record<GameSystem, { width: number; height: number }> = {
+  gba: { width: 240, height: 160 },
+  nds: { width: 256, height: 384 },
+};
 const MIN_OPACITY = 0.2;
 const OPACITY_STEP = 0.05;
 const DOT_SPACING = 24;
@@ -438,14 +442,17 @@ function ResetButton({ onPress }: { onPress: () => void }) {
 }
 
 export default function ControlEditorScreen() {
-  const params = useLocalSearchParams<{ orientation?: string }>();
+  const params = useLocalSearchParams<{ orientation?: string; system?: string }>();
+  // Opened from Settings there's no game, so it edits the GBA layout.
+  const system: GameSystem = params.system === 'nds' ? 'nds' : 'gba';
+  const picture = PICTURE_SIZE[system];
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [orientation, setOrientation] = useState<Orientation>(
     params.orientation === 'landscape' ? 'landscape' : 'portrait'
   );
-  const [defaults] = useState(() => KrsEmulator.getControlDefaults());
-  const [layout, setLayout] = useState<ControlLayout>(loadControlLayout);
+  const [defaults] = useState(() => KrsEmulator.getControlDefaults(system));
+  const [layout, setLayout] = useState<ControlLayout>(() => loadControlLayout(system));
   const [history, setHistory] = useState<ControlLayout[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapToGrid, setSnapToGrid] = useState(true);
@@ -532,7 +539,7 @@ export default function ControlEditorScreen() {
     ((orientationDefaults.game.right - orientationDefaults.game.left) *
       scale *
       PixelRatio.get()) /
-    GBA_WIDTH
+    picture.width
   ).toFixed(1);
 
   const panelWidth = Math.min(availableWidth - 16, LANDSCAPE_PANEL_WIDTH * scale);
@@ -605,7 +612,7 @@ export default function ControlEditorScreen() {
 
   function reset() {
     setHistory((past) => [...past, layout]);
-    updateOrientation(EMPTY_LAYOUT[orientation]);
+    updateOrientation(emptyLayout(system)[orientation]);
     setSelectedId(null);
     setConfirmingReset(false);
   }
@@ -613,7 +620,7 @@ export default function ControlEditorScreen() {
   async function done() {
     setFailed(false);
     try {
-      await saveControlLayout(layout);
+      await saveControlLayout(layout, system);
       router.back();
     } catch {
       setFailed(true);
@@ -714,8 +721,8 @@ export default function ControlEditorScreen() {
   );
 
   if (isLandscape) {
-    const pictureWidth = Math.min(availableWidth, availableHeight * (GBA_WIDTH / GBA_HEIGHT));
-    const pictureHeight = pictureWidth * (GBA_HEIGHT / GBA_WIDTH);
+    const pictureWidth = Math.min(availableWidth, availableHeight * (picture.width / picture.height));
+    const pictureHeight = pictureWidth * (picture.height / picture.width);
 
     return (
       <View className="flex-1 bg-black">
@@ -878,7 +885,7 @@ export default function ControlEditorScreen() {
       <View style={{ height: previewHeight }} className="items-center justify-center">
         <View
           className="overflow-hidden rounded-md bg-card"
-          style={{ height: previewHeight, aspectRatio: 3 / 2 }}>
+          style={{ height: previewHeight, aspectRatio: picture.width / picture.height }}>
           {previewUri ? (
             <Image
               source={{ uri: previewUri }}

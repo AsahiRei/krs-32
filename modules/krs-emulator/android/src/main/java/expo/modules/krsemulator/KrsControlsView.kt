@@ -219,8 +219,8 @@ private fun PlayerLayout.withSaved(saved: JSONObject?): PlayerLayout {
     radiusX = control("X").radius(radiusX),
     radiusY = control("Y").radius(radiusY),
     pictureAspect = pictureAspect,
-    swap = swap,
-    screens = screens,
+    swap = swap?.placed(control("SWAP")),
+    screens = screens?.placed(control("SCREENS")),
     screenBox = screenBox,
     titleMaxWidth = titleMaxWidth,
   )
@@ -300,6 +300,8 @@ private fun describe(layout: PlayerLayout): Map<String, Any> {
   if (!layout.isPortrait) {
     controls += describe(layout.fastForward, "FF", "2×", "pill")
     controls += describe(layout.menu, "MENU", "≡", "pill")
+    layout.swap?.let { controls += describe(it, "SWAP", "⇅", "pill") }
+    layout.screens?.let { controls += describe(it, "SCREENS", "▭", "pill") }
   }
   return mapOf(
     "width" to layout.width,
@@ -364,39 +366,42 @@ private val LANDSCAPE = PlayerLayout(
   opacity = 0.7f,
 )
 
-// The screens sit near the top with the D-pad and the A/B/X/Y diamond below, like the real DS.
-// The menu row between them also holds the screen swap and screen layout buttons.
+// The screens fill the top of the phone with the D-pad and the A/B/X/Y diamond below, like the
+// real DS. It's taller than the GBA layout so it fills 20:9 phones instead of leaving a gap at the
+// bottom. The menu row between them also holds the screen swap and screen layout buttons.
 private val DS_PORTRAIT = PlayerLayout(
   width = 412f,
-  height = 772f,
-  game = RectF(76f, 12f, 336f, 402f),
-  frame = RectF(69f, 4.5f, 343f, 409.5f),
-  shoulderL = RectF(12f, 476f, 108f, 520f),
-  shoulderR = RectF(304f, 476f, 400f, 520f),
-  select = RectF(108f, 728f, 196f, 764f),
-  start = RectF(216f, 728f, 304f, 764f),
-  menu = RectF(16f, 416f, 64f, 464f),
-  fastForward = RectF(301f, 416f, 389f, 464f),
-  dpad = PointF(104f, 618f),
-  buttonA = PointF(366f, 618f),
-  buttonB = PointF(316f, 668f),
+  height = 900f,
+  game = RectF(37f, 8f, 375f, 522f),
+  frame = RectF(30f, 1f, 382f, 529f),
+  shoulderL = RectF(12f, 604f, 108f, 648f),
+  shoulderR = RectF(304f, 604f, 400f, 648f),
+  select = RectF(108f, 852f, 196f, 888f),
+  start = RectF(216f, 852f, 304f, 888f),
+  menu = RectF(16f, 536f, 64f, 584f),
+  fastForward = RectF(301f, 536f, 389f, 584f),
+  dpad = PointF(104f, 752f),
+  buttonA = PointF(366f, 752f),
+  buttonB = PointF(316f, 802f),
   radiusA = 30f,
   radiusB = 30f,
-  titleCenter = PointF(240f, 440f),
-  editableTop = 472f,
-  dpadScale = 0.85f,
-  buttonX = PointF(316f, 568f),
-  buttonY = PointF(266f, 618f),
+  titleCenter = PointF(240f, 560f),
+  editableTop = 596f,
+  dpadScale = 0.9f,
+  buttonX = PointF(316f, 702f),
+  buttonY = PointF(266f, 752f),
   radiusX = 30f,
   radiusY = 30f,
   pictureAspect = DS_ASPECT,
-  swap = RectF(72f, 416f, 120f, 464f),
-  screens = RectF(128f, 416f, 176f, 464f),
-  screenBox = RectF(8f, 8f, 404f, 406f),
+  swap = RectF(72f, 536f, 120f, 584f),
+  screens = RectF(128f, 536f, 176f, 584f),
+  screenBox = RectF(8f, 8f, 404f, 522f),
   titleMaxWidth = 104f,
 )
 
-// The screens get the column between the two sets of controls, so nothing covers them.
+// Matches the GBA landscape layout: the screens get the whole display, the controls float over
+// them, the D-pad reaches the left edge and the A/B/X/Y diamond the right. The swap and screen
+// layout buttons join fast-forward and the menu at the top.
 private val DS_LANDSCAPE = PlayerLayout(
   width = 917f,
   height = 412f,
@@ -404,29 +409,27 @@ private val DS_LANDSCAPE = PlayerLayout(
   frame = null,
   shoulderL = RectF(4f, 4f, 128f, 56f),
   shoulderR = RectF(789f, 4f, 913f, 56f),
-  select = RectF(70f, 362f, 150f, 402f),
-  start = RectF(767f, 362f, 847f, 402f),
-  menu = RectF(829f, 70f, 901f, 118f),
-  fastForward = RectF(16f, 70f, 88f, 118f),
-  dpad = PointF(150f, 240f),
-  buttonA = PointF(825f, 240f),
-  buttonB = PointF(767f, 298f),
+  select = RectF(373f, 362f, 453f, 402f),
+  start = RectF(464f, 362f, 544f, 402f),
+  menu = RectF(466.5f, 6f, 538.5f, 54f),
+  fastForward = RectF(378.5f, 6f, 450.5f, 54f),
+  dpad = PointF(100f, 306f),
+  buttonA = PointF(875f, 306f),
+  buttonB = PointF(817f, 364f),
   radiusA = 34f,
   radiusB = 34f,
   titleCenter = null,
   editableTop = 0f,
-  buttonX = PointF(767f, 182f),
-  buttonY = PointF(709f, 240f),
+  opacity = 0.7f,
+  buttonX = PointF(817f, 248f),
+  buttonY = PointF(759f, 306f),
   radiusX = 34f,
   radiusY = 34f,
   pictureAspect = DS_ASPECT,
-  swap = RectF(96f, 70f, 144f, 118f),
-  screens = RectF(773f, 70f, 821f, 118f),
-  screenBox = RectF(250f, 0f, 667f, 412f),
+  swap = RectF(322.5f, 6f, 370.5f, 54f),
+  screens = RectF(546.5f, 6f, 594.5f, 54f),
+  screenBox = RectF(0f, 0f, 917f, 412f),
 )
-
-// With the touch controls hidden, the landscape menu row moves up to the top edge.
-private const val PAD_LANDSCAPE_SHIFT = -64f
 
 private fun layoutFor(system: GameSystem, portrait: Boolean) = when (system) {
   GameSystem.GBA -> if (portrait) PORTRAIT else LANDSCAPE
@@ -487,6 +490,10 @@ internal class KrsControlsView(
   /** Where the DS screens are, in pixels; empty on the GBA. */
   private var dsScreens = DsScreens(Rect(), Rect())
   private var autoHideControls = true
+  /** In Pop-up, the swap button shows and hides the second screen, and lights up while it shows. */
+  private var popupMode = false
+  private var popupShown = false
+  private val scrim = Paint().apply { color = Color.argb(150, 0, 0, 0) }
   /** The first connected controller, or null. */
   private var padName: String? = null
   private val inputManager = context.getSystemService(InputManager::class.java)
@@ -589,6 +596,13 @@ internal class KrsControlsView(
     onPadModeChanged(before)
   }
 
+  fun setPopupState(mode: Boolean, shown: Boolean) {
+    if (mode == popupMode && shown == popupShown) return
+    popupMode = mode
+    popupShown = shown
+    invalidate()
+  }
+
   fun setDsScreens(screens: DsScreens) {
     if (screens == dsScreens) return
     dsScreens = screens
@@ -624,6 +638,8 @@ internal class KrsControlsView(
     val s = scaleFor(base, w, h)
     val x = offsetX(base, w, s)
     val y = offsetY(base, h, s)
+    // Landscape works like the GBA: the screens may use the whole view, under the controls.
+    if (!padMode && !base.isPortrait) return RectF(0f, 0f, w.toFloat(), h.toFloat())
     if (!padMode) {
       val box = base.screenBox ?: base.game
       return RectF(x + box.left * s, y + box.top * s, x + box.right * s, y + box.bottom * s)
@@ -634,8 +650,8 @@ internal class KrsControlsView(
       val rowTop = base.menu.top + portraitPadShift(base, h, s)
       RectF(margin, margin, w - margin, y + (rowTop - PAD_STATUS_GAP * 2) * s)
     } else {
-      val rowBottom = base.menu.bottom + PAD_LANDSCAPE_SHIFT
-      RectF(margin, y + (rowBottom + PAD_MARGIN) * s, w - margin, h - margin)
+      // Between the menu row at the top and the status line where Select and Start were.
+      RectF(margin, y + (base.menu.bottom + PAD_MARGIN) * s, w - margin, y + (base.select.top - PAD_MARGIN) * s)
     }
   }
 
@@ -651,16 +667,15 @@ internal class KrsControlsView(
       updateTurbo()
       sendButtons()
     }
-    // Saved positions were made for the GBA layout, which is all the control editor edits so far,
-    // so DS games keep their default layout.
-    val saved = if (system == GameSystem.GBA) savedLayouts else null
+    // The Player hands over the saved layout for this game's system.
+    val saved = savedLayouts
     scale = scaleFor(base, w, h)
     originX = offsetX(base, w, scale)
     originY = offsetY(base, h, scale)
     val shift = when {
       !padMode -> 0f
       base.isPortrait -> portraitPadShift(base, h, scale)
-      else -> PAD_LANDSCAPE_SHIFT
+      else -> 0f
     }
     layout = base.withSaved(saved?.optJSONObject(if (base.isPortrait) "portrait" else "landscape"))
       .withToolbarShift(shift)
@@ -768,6 +783,7 @@ internal class KrsControlsView(
 
   /** A thin outline around the DS screens in portrait, like the device's bezel. */
   private fun drawDsFrame(canvas: Canvas) {
+    drawPopupBackdrop(canvas)
     if (!layout.isPortrait) return
     val bounds = dsScreens.bounds
     if (bounds.isEmpty) return
@@ -786,7 +802,34 @@ internal class KrsControlsView(
     )
   }
 
+  /** Dims the screen behind a pop-up and outlines the pop-up, so it reads as a panel on top. */
+  private fun drawPopupBackdrop(canvas: Canvas) {
+    val popup = dsScreens.popup
+    val behind = dsScreens.behindPopup
+    if (popup.isEmpty || behind.isEmpty) return
+    path.reset()
+    path.fillType = Path.FillType.EVEN_ODD
+    path.addRect(RectF(behind), Path.Direction.CW)
+    path.addRect(RectF(popup), Path.Direction.CW)
+    canvas.drawPath(path, scrim)
+    path.fillType = Path.FillType.WINDING
+    outline.color = ACCENT
+    outline.strokeWidth = 2f * scale
+    val inset = outline.strokeWidth / 2
+    canvas.drawRect(
+      popup.left - inset,
+      popup.top - inset,
+      popup.right + inset,
+      popup.bottom + inset,
+      outline,
+    )
+  }
+
   private fun drawSwapButton(canvas: Canvas, rect: RectF) {
+    if (popupMode) {
+      drawPopupButton(canvas, rect)
+      return
+    }
     val pressed = isDown(SWAP)
     drawPanel(canvas, rect, if (layout.isPortrait) 14f else 24f, pressed)
     glyph.color = if (pressed) ON_ACCENT else FOREGROUND
@@ -805,6 +848,24 @@ internal class KrsControlsView(
       path.lineTo(x + 4f, tip + head)
       canvas.drawPath(path, glyph)
     }
+  }
+
+  /** A small screen with a stylus tip, lit while the pop-up shows. */
+  private fun drawPopupButton(canvas: Canvas, rect: RectF) {
+    val lit = popupShown || isDown(SWAP)
+    drawPanel(canvas, rect, if (layout.isPortrait) 14f else 24f, lit)
+    val color = if (lit) ON_ACCENT else FOREGROUND
+    outline.color = color
+    outline.strokeWidth = 2f
+    val cx = rect.centerX()
+    val cy = rect.centerY()
+    canvas.drawRoundRect(cx - 10f, cy - 8f, cx + 10f, cy + 7f, 2.5f, 2.5f, outline)
+    glyph.color = color
+    glyph.strokeWidth = 2f
+    // The stylus, leaning in from the lower right to touch the screen.
+    canvas.drawLine(cx + 2f, cy + 1f, cx + 10f, cy + 11f, glyph)
+    shape.color = color
+    canvas.drawCircle(cx + 1.5f, cy + 0.5f, 1.8f, shape)
   }
 
   private fun drawScreensButton(canvas: Canvas, rect: RectF) {
@@ -829,11 +890,10 @@ internal class KrsControlsView(
       centerY = layout.menu.top - PAD_STATUS_GAP
       maxWidth = layout.width - 48f
     } else {
-      val left = layout.swap?.right ?: layout.fastForward.right
-      val right = layout.screens?.left ?: layout.menu.left
-      centerX = (left + right) / 2
-      centerY = layout.menu.centerY()
-      maxWidth = right - left - 40f
+      // Select and Start are hidden, so the status line takes their place at the bottom.
+      centerX = layout.width / 2
+      centerY = layout.select.centerY()
+      maxWidth = layout.width * 0.6f
     }
     text.typeface = fontSemiBold
     text.textSize = 14f
@@ -1146,6 +1206,9 @@ internal class KrsControlsView(
     val x = event.getX(index)
     val y = event.getY(index)
     if (!dsScreens.touch.contains(x.roundToInt(), y.roundToInt())) return
+    // The top screen popped up over the touchscreen hides that part of it.
+    val popup = dsScreens.popup
+    if (popup != dsScreens.touch && popup.contains(x.roundToInt(), y.roundToInt())) return
     val designX = designX(event, index)
     val designY = designY(event, index)
     if (extraAt(designX, designY) >= 0 || hitTest(designX, designY) != 0) return

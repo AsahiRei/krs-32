@@ -1,4 +1,5 @@
 import { loadSettings, saveSettings } from '@/lib/setup';
+import type { GameSystem } from '@/lib/systems';
 import type { ControlDefault, OrientationDefaults } from '@/modules/krs-emulator';
 
 export type Orientation = 'portrait' | 'landscape';
@@ -118,9 +119,23 @@ export const EMPTY_LAYOUT: ControlLayout = {
   },
 };
 
-export const loadControlLayout = () => loadSettings().controlLayout ?? EMPTY_LAYOUT;
+// DS games start with no added buttons: X and Y already fill the spots the GBA's turbo buttons use.
+const EMPTY_DS_LAYOUT: ControlLayout = {
+  portrait: { opacity: 1, controls: {} },
+  landscape: { opacity: 0.7, controls: {} },
+};
 
-export const saveControlLayout = (controlLayout: ControlLayout) => saveSettings({ controlLayout });
+export const emptyLayout = (system: GameSystem = 'gba') =>
+  system === 'nds' ? EMPTY_DS_LAYOUT : EMPTY_LAYOUT;
+
+/** Each system keeps its own layout, since their controls and default places differ. */
+export function loadControlLayout(system: GameSystem = 'gba'): ControlLayout {
+  const settings = loadSettings();
+  return (system === 'nds' ? settings.dsControlLayout : settings.controlLayout) ?? emptyLayout(system);
+}
+
+export const saveControlLayout = (controlLayout: ControlLayout, system: GameSystem = 'gba') =>
+  saveSettings(system === 'nds' ? { dsControlLayout: controlLayout } : { controlLayout });
 
 export function placedControl(control: ControlDefault, layout: OrientationLayout): PlacedControl {
   return (

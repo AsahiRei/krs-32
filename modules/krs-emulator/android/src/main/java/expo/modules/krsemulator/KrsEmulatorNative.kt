@@ -32,7 +32,8 @@ internal object KrsEmulatorNative {
   external fun setPointer(pressed: Boolean, x: Float, y: Float)
   /**
    * Where the DS's top and bottom screens go in the surface: left, top, width, height in pixels
-   * for each, top screen first. A zero width hides that screen; null draws one picture.
+   * for each, top screen first. A zero width hides that screen; null draws one picture. A ninth
+   * value, when not zero, draws the touchscreen first so the top screen pops up over it.
    */
   external fun setScreenRects(rects: FloatArray?)
   external fun setFastForward(enabled: Boolean)

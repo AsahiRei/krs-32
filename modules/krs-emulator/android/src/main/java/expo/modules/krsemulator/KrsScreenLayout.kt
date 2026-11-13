@@ -10,6 +10,8 @@ import kotlin.math.roundToInt
 private const val SCREEN_ASPECT = 256f / 192f
 // In Focus, the small screen's width as a share of the large one's.
 private const val FOCUS_SMALL_SHARE = 0.4f
+// In Pop-up, the popped-up screen's width as a share of the one it covers.
+private const val POPUP_SHARE = 0.78f
 private const val MAX_GAP_DP = 64f
 
 /** How the DS's two screens are arranged. Keys match ScreenMode in lib/screenLayout.ts. */
@@ -17,7 +19,9 @@ internal enum class ScreenMode(val key: String) {
   STACKED("stacked"),
   SIDE_BY_SIDE("sideBySide"),
   FOCUS("focus"),
-  SINGLE("single");
+  SINGLE("single"),
+  /** One screen like the GBA, with the other popping up over it on demand. */
+  POPUP("popup");
 
   companion object {
     fun fromKey(key: String?): ScreenMode = entries.firstOrNull { it.key == key } ?: STACKED
@@ -26,7 +30,8 @@ internal enum class ScreenMode(val key: String) {
 
 /**
  * The player's choice of DS screen arrangement. [swapped] puts the touchscreen first: on top when
- * stacked, on the left side by side, large in Focus, and the one shown in Single.
+ * stacked, on the left side by side, large in Focus, and the one shown in Single and Pop-up (where
+ * the top screen is then the one that pops up).
  */
 internal data class DsScreenLayout(
   val mode: ScreenMode = ScreenMode.STACKED,
@@ -46,8 +51,20 @@ internal data class DsScreenLayout(
   }
 }
 
-/** Where the main (top) screen and the touchscreen go. An empty rectangle is a hidden screen. */
-internal data class DsScreens(val main: Rect, val touch: Rect) {
+/**
+ * Where the main (top) screen and the touchscreen go. An empty rectangle is a hidden screen. In
+ * Pop-up, [popup] is the screen showing over [behindPopup]; both are empty otherwise.
+ */
+internal data class DsScreens(
+  val main: Rect,
+  val touch: Rect,
+  val popup: Rect = Rect(),
+  val behindPopup: Rect = Rect(),
+) {
+  /** The touchscreen is drawn first when the top screen pops up over it. */
+  val touchFirst: Boolean
+    get() = !popup.isEmpty && popup == main
+
   val bounds: Rect
     get() = Rect(main).apply { if (isEmpty) set(touch) else if (!touch.isEmpty) union(touch) }
 }
@@ -55,11 +72,17 @@ internal data class DsScreens(val main: Rect, val touch: Rect) {
 private fun rect(left: Float, top: Float, width: Float, height: Float) =
   Rect(left.roundToInt(), top.roundToInt(), (left + width).roundToInt(), (top + height).roundToInt())
 
-/** Fits the two screens into [box], in pixels, for the layout. */
-internal fun arrangeDsScreens(box: RectF, layout: DsScreenLayout, density: Float): DsScreens {
+/** Fits the two screens into [box], in pixels, for the layout. [popupShown] is for Pop-up. */
+internal fun arrangeDsScreens(
+  box: RectF,
+  layout: DsScreenLayout,
+  density: Float,
+  popupShown: Boolean = false,
+): DsScreens {
   val boxWidth = box.width()
   val boxHeight = box.height()
-  val gap = if (layout.mode == ScreenMode.SINGLE) 0f else layout.gapDp * density
+  val gap =
+    if (layout.mode == ScreenMode.SINGLE || layout.mode == ScreenMode.POPUP) 0f else layout.gapDp * density
   val first: Rect
   val second: Rect
 
@@ -88,11 +111,13 @@ internal fun arrangeDsScreens(box: RectF, layout: DsScreenLayout, density: Float
       if (besideWidth >= underWidth) {
         val width = besideWidth
         val height = width / SCREEN_ASPECT
-        val left = box.left + (boxWidth - width * (1 + share) - gap) / 2
         val top = box.top + (boxHeight - height) / 2
-        first = rect(left, top, width, height)
-        // Bottom-aligned, so it sits near the thumbs.
-        second = rect(left + width + gap, top + height * (1 - share), width * share, height * share)
+        // The large screen keeps the left edge and the small one grows into everything left, up to
+        // the right edge, though never past the large one's size.
+        val smallWidth = min(boxWidth - width - gap, width)
+        first = rect(box.left, top, width, height)
+        // Top-aligned: in landscape the face buttons cover the bottom corner.
+        second = rect(box.right - smallWidth, top, smallWidth, smallWidth / SCREEN_ASPECT)
       } else {
         val width = underWidth
         val height = width / SCREEN_ASPECT
@@ -102,11 +127,30 @@ internal fun arrangeDsScreens(box: RectF, layout: DsScreenLayout, density: Float
         second = rect(left + width * (1 - share) / 2, top + height + gap, width * share, height * share)
       }
     }
-    ScreenMode.SINGLE -> {
+    ScreenMode.SINGLE, ScreenMode.POPUP -> {
       val width = min(boxWidth, boxHeight * SCREEN_ASPECT)
       val height = width / SCREEN_ASPECT
       first = rect(box.left + (boxWidth - width) / 2, box.top + (boxHeight - height) / 2, width, height)
-      second = Rect()
+      second = if (layout.mode == ScreenMode.POPUP && popupShown) {
+        // Centered over the first, so it reads as a panel opened on top of the game.
+        val popupWidth = width * POPUP_SHARE
+        val popupHeight = height * POPUP_SHARE
+        rect(
+          first.exactCenterX() - popupWidth / 2,
+          first.exactCenterY() - popupHeight / 2,
+          popupWidth,
+          popupHeight,
+        )
+      } else {
+        Rect()
+      }
+    }
+  }
+  if (layout.mode == ScreenMode.POPUP && !second.isEmpty) {
+    return if (layout.swapped) {
+      DsScreens(main = second, touch = first, popup = second, behindPopup = first)
+    } else {
+      DsScreens(main = first, touch = second, popup = second, behindPopup = first)
     }
   }
   return if (layout.swapped) DsScreens(main = second, touch = first) else DsScreens(main = first, touch = second)

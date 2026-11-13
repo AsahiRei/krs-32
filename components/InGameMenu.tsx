@@ -100,7 +100,7 @@ type InGameMenuProps = {
   onOpenCheats?: () => void;
   /** Left out for systems the control editor doesn't support yet, which disables the tile. */
   onOpenControls?: () => void;
-  /** DS games: replaces the Controls tile, which they don't support yet. */
+  /** DS games: takes the place of the Audio tile, which has nothing to open yet. */
   onOpenScreenLayout?: () => void;
   onOpenScreenFilter: () => void;
   onQuickSave: () => Promise<void>;
@@ -300,16 +300,16 @@ export function InGameMenu({
                   <MenuTile label="Screen filter" onPress={onOpenScreenFilter} />
                 </View>
                 <View className="flex-row gap-2">
-                  <MenuTile label="Audio" />
                   {onOpenScreenLayout ? (
                     <MenuTile label="Screen layout" onPress={onOpenScreenLayout} />
                   ) : (
-                    <MenuTile
-                      label="Controls"
-                      value={onOpenControls ? undefined : 'GBA only'}
-                      onPress={onOpenControls}
-                    />
+                    <MenuTile label="Audio" />
                   )}
+                  <MenuTile
+                    label="Controls"
+                    value={onOpenControls ? undefined : 'GBA only'}
+                    onPress={onOpenControls}
+                  />
                 </View>
               </View>
 

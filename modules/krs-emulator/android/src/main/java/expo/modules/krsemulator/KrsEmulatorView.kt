@@ -21,7 +21,10 @@ class KrsEmulatorView(context: Context, appContext: AppContext) :
   private val controls = KrsControlsView(
     context,
     onMenuPress = { onMenuPress(emptyMap()) },
-    onSwapPress = { onSwapScreensPress(emptyMap()) },
+    // In Pop-up, the same button shows and hides the second screen instead of swapping.
+    onSwapPress = {
+      if (dsLayout.mode == ScreenMode.POPUP) togglePopup() else onSwapScreensPress(emptyMap())
+    },
     onScreensPress = { onScreenLayoutPress(emptyMap()) },
     onScreenAreaChange = { requestLayout() },
   )
@@ -29,6 +32,7 @@ class KrsEmulatorView(context: Context, appContext: AppContext) :
   private var stretchVideo = false
   private var system = GameSystem.GBA
   private var dsLayout = DsScreenLayout()
+  private var popupShown = false
   private var screenRects: FloatArray? = null
 
   init {
@@ -55,7 +59,16 @@ class KrsEmulatorView(context: Context, appContext: AppContext) :
   fun setScreenLayout(json: String) {
     val parsed = DsScreenLayout.parse(json)
     if (parsed == dsLayout) return
+    // A new arrangement starts with the pop-up closed.
+    if (parsed.mode != dsLayout.mode || parsed.swapped != dsLayout.swapped) popupShown = false
     dsLayout = parsed
+    controls.setPopupState(parsed.mode == ScreenMode.POPUP, popupShown)
+    requestLayout()
+  }
+
+  private fun togglePopup() {
+    popupShown = !popupShown
+    controls.setPopupState(true, popupShown)
     requestLayout()
   }
 
@@ -93,7 +106,7 @@ class KrsEmulatorView(context: Context, appContext: AppContext) :
   // The surface covers both screens; the renderer draws each into its own part of it.
   private fun layoutDsScreens(width: Int, height: Int) {
     val box = controls.dsScreenBox(width, height)
-    val screens = arrangeDsScreens(box, dsLayout, resources.displayMetrics.density)
+    val screens = arrangeDsScreens(box, dsLayout, resources.displayMetrics.density, popupShown)
     val surface = screens.bounds
     if (surface.isEmpty) surface.set(0, 0, 1, 1)
     layoutChild(gameScreen, surface.left, surface.top, surface.right, surface.bottom)
@@ -109,7 +122,8 @@ class KrsEmulatorView(context: Context, appContext: AppContext) :
         rect.height().toFloat(),
       )
     }
-    val rects = relative(screens.main) + relative(screens.touch)
+    val rects = relative(screens.main) + relative(screens.touch) +
+      floatArrayOf(if (screens.touchFirst) 1f else 0f)
     screenRects = rects
     KrsEmulatorNative.setScreenRects(rects)
   }

@@ -87,6 +87,8 @@ export default function SettingsScreen() {
     useCallback(() => {
       setSettings(loadSettings());
       setControllers(KrsEmulator.getControllers());
+      // They may have been imported from the Library's banner since this screen last showed.
+      setDsFilesFound(dsSystemFilesFound());
       // Adding up file sizes blocks the JS thread, so let the screen paint first.
       const timer = setTimeout(() => {
         const current = loadSettings();

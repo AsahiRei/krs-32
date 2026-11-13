@@ -57,6 +57,8 @@ function ActionRow({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={value ? `${label}, ${value}` : label}
+      accessibilityState={{ disabled: !onPress }}
+      disabled={!onPress}
       onPress={onPress}
       className="h-14 flex-row items-center gap-4 border-t border-card-border px-1.5 active:bg-control-pressed">
       <Text
@@ -64,7 +66,7 @@ function ActionRow({
         {label}
       </Text>
       {value && <Text className="font-mono text-[14px] text-secondary">{value}</Text>}
-      {!danger && <ChevronRight size={18} color={palette.secondary} />}
+      {!danger && onPress && <ChevronRight size={18} color={palette.secondary} />}
     </Pressable>
   );
 }
@@ -251,7 +253,12 @@ export function GameSheet({
                 value={`${usedSlots} / ${SLOT_COUNT}`}
                 onPress={onOpenSaveStates}
               />
-              <ActionRow label="Cheats" value={`${cheatsOn} on`} onPress={onOpenCheats} />
+              {/* The Player only applies cheats to GBA games so far. */}
+              {game.system === 'nds' ? (
+                <ActionRow label="Cheats" value="GBA only" />
+              ) : (
+                <ActionRow label="Cheats" value={`${cheatsOn} on`} onPress={onOpenCheats} />
+              )}
               <ActionRow
                 label={game.coverFile ? 'Change cover image' : 'Add cover image'}
                 onPress={() => updateCover(() => chooseCover(game.id))}

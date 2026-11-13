@@ -15,6 +15,8 @@ export type AppSettings = {
   fastForwardSpeed: number;
   gameOrientation: GameOrientation;
   controlLayout: ControlLayout | null;
+  /** The DS's own control layout; its controls and defaults differ from the GBA's. */
+  dsControlLayout: ControlLayout | null;
   controllerMapping: ControllerMapping | null;
   video: VideoSettings;
   /** DS games hide their touch controls while a controller is connected. */
@@ -33,6 +35,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fastForwardSpeed: 2,
   gameOrientation: 'landscape',
   controlLayout: null,
+  dsControlLayout: null,
   controllerMapping: null,
   video: { filter: 'original', strength: 0.4, aspect: 'native', scaling: 'fit' },
   autoHideControls: true,
@@ -148,6 +151,18 @@ const DS_BIOS7_BYTES = 16 * 1024;
 const DS_BIOS9_BYTES = 4 * 1024;
 // DS, DS Lite and DSi firmware dumps.
 const DS_FIRMWARE_BYTES = [128 * 1024, 256 * 1024, 512 * 1024];
+// CRC32s of the known good dumps. Firmware differs per console, so it has none.
+const DS_BIOS7_CRC = 0x1280f0d5;
+const GBA_BIOS_CRC = 0x81977335;
+
+function crc32(bytes: Uint8Array) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 // melonDS reads these names from the same folder as the GBA BIOS (see KrsEmulatorModule).
 const dsSystemFile = (name: DsSystemFile) => new File(Paths.document, 'system', name);
@@ -164,10 +179,17 @@ export function dsSystemFilesFound(): DsSystemFile[] {
 }
 
 /** Works out which DS file a dump is from its size, or null if it isn't one. */
-function dsSystemFileFor(fileName: string, size: number): DsSystemFile | null {
+function dsSystemFileFor(fileName: string, bytes: Uint8Array): DsSystemFile | null {
+  const size = bytes.length;
   if (size === DS_BIOS9_BYTES) return 'bios9.bin';
-  // A GBA BIOS is the same size as the ARM7 BIOS, so its name is the only way to tell them apart.
-  if (size === DS_BIOS7_BYTES) return /gba/i.test(fileName) ? null : 'bios7.bin';
+  if (size === DS_BIOS7_BYTES) {
+    // A GBA BIOS is the same size as the ARM7 BIOS, and stored as one it stops DS games booting.
+    const crc = crc32(bytes);
+    if (crc === DS_BIOS7_CRC) return 'bios7.bin';
+    if (crc === GBA_BIOS_CRC) return null;
+    // An unfamiliar dump is only taken when its name says it's the ARM7 BIOS.
+    return /7/.test(fileName) && !/gba/i.test(fileName) ? 'bios7.bin' : null;
+  }
   if (DS_FIRMWARE_BYTES.includes(size)) return 'firmware.bin';
   return null;
 }
@@ -184,7 +206,7 @@ export async function importDsSystemFiles(): Promise<DsSystemFile[] | null> {
   const rejected: string[] = [];
   for (const file of picked.result) {
     const bytes = await file.bytes();
-    const target = dsSystemFileFor(file.name, bytes.length);
+    const target = dsSystemFileFor(file.name, bytes);
     if (!target) {
       rejected.push(file.name);
       continue;

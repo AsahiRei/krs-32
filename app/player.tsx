@@ -127,7 +127,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
   const [speed, setSpeed] = useState(() => loadSettings().fastForwardSpeed);
   const [orientation, setOrientation] = useState(() => loadSettings().gameOrientation);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [controlLayout, setControlLayout] = useState(loadControlLayout);
+  const [controlLayout, setControlLayout] = useState(() => loadControlLayout(system));
   const [stretchVideo, setStretchVideo] = useState(
     () => loadSettings().video.aspect === 'stretch'
   );
@@ -258,7 +258,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       if (!inSubScreen.current) return;
       inSubScreen.current = false;
       editingControls.current = false;
-      setControlLayout(loadControlLayout());
+      setControlLayout(loadControlLayout(system));
       setStretchVideo(loadSettings().video.aspect === 'stretch');
       const loadedLabel = takeLoadedLabel();
       if (loadedLabel !== null) {
@@ -268,7 +268,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
         refreshMenuData();
         setMenuOpen(true);
       }
-    }, [closeMenu, refreshMenuData, showUndoToast])
+    }, [closeMenu, refreshMenuData, showUndoToast, system])
   );
 
   useFocusEffect(
@@ -396,7 +396,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
     editingControls.current = true;
     openSubScreen({
       pathname: '/control-editor',
-      params: { orientation: width > height ? 'landscape' : 'portrait' },
+      params: { orientation: width > height ? 'landscape' : 'portrait', system },
     });
   }
 
@@ -472,7 +472,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
           onOpenSaveStates={() => openSubScreen('/save-states?inGame=1')}
           onOpenCheats={isDs ? undefined : () => openSubScreen('/cheats?inGame=1')}
           onOpenScreenFilter={() => openSubScreen('/screen-filter?inGame=1')}
-          onOpenControls={isDs ? undefined : openControlEditor}
+          onOpenControls={openControlEditor}
           onOpenScreenLayout={isDs ? openScreenLayout : undefined}
           fastForwardSpeed={speed}
           onSelectSpeed={selectSpeed}
