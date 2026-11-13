@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SetupButton } from '@/components/SetupCard';
 import { palette } from '@/constants/palette';
 import {
-  CHEAT_TYPES,
+  cheatTypesFor,
   type CheatType,
   codeLines,
   findCodeIssue,
@@ -21,6 +21,7 @@ import {
   normalizeCodeInput,
   saveCheats,
 } from '@/lib/cheats';
+import { getPlayRequest } from '@/lib/library';
 
 const CODE_LINE_HEIGHT = 26;
 const CODE_PADDING_Y = 12;
@@ -35,7 +36,10 @@ export default function CheatEditScreen() {
     cheatId ? loadCheats(saveId).find((cheat) => cheat.id === cheatId) : undefined
   );
   const [name, setName] = useState(existing?.name ?? '');
-  const [type, setType] = useState<CheatType>(existing?.type ?? 'raw');
+  // Cheats open for the game handed to the Player, from the Library or from inside a game.
+  const [cheatTypes] = useState(() => cheatTypesFor(getPlayRequest()?.game.system ?? 'gba'));
+  const isDs = cheatTypes.some((option) => option.type === 'ards');
+  const [type, setType] = useState<CheatType>(existing?.type ?? cheatTypes[0].type);
   const [code, setCode] = useState(existing?.code ?? '');
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [codeFocused, setCodeFocused] = useState(false);
@@ -51,8 +55,8 @@ export default function CheatEditScreen() {
     [code, type, codeFocused, issue]
   );
   const lineCount = useMemo(() => codeLines(code).length, [code]);
-  const typeLabel = CHEAT_TYPES.find((option) => option.type === type)?.label;
-  const otherTypes = CHEAT_TYPES.filter((option) => option.type !== type)
+  const typeLabel = cheatTypes.find((option) => option.type === type)?.label;
+  const otherTypes = cheatTypes.filter((option) => option.type !== type)
     .map((option) => option.label)
     .join(', ');
   const canSave = !!saveId && !!name.trim() && lineCount > 0 && !finalIssue && !saving;
@@ -154,18 +158,24 @@ export default function CheatEditScreen() {
 
           <View className="gap-2">
             {fieldLabel('Code type')}
+            {/* With only one format there's nothing to choose, so it's shown, not offered. */}
             <Pressable
-              accessibilityRole="button"
+              accessibilityRole={otherTypes ? 'button' : undefined}
               accessibilityLabel={`Code type, ${typeLabel}`}
-              accessibilityState={{ expanded: typeMenuOpen }}
+              accessibilityState={otherTypes ? { expanded: typeMenuOpen } : undefined}
+              disabled={!otherTypes}
               onPress={() => setTypeMenuOpen(!typeMenuOpen)}
               className="h-[52px] flex-row items-center justify-between rounded-[14px] border border-control-border bg-card px-4 active:bg-control-pressed">
               <Text className="font-mono text-[15px] text-foreground">{typeLabel}</Text>
-              <ChevronDown size={20} color={palette.secondary} />
+              {otherTypes ? <ChevronDown size={20} color={palette.secondary} /> : null}
             </Pressable>
-            {typeMenuOpen ? (
+            {!otherTypes ? (
+              <Text className="font-inter text-[13px] leading-[18px] text-muted">
+                DS games take Action Replay DS codes.
+              </Text>
+            ) : typeMenuOpen ? (
               <View className="overflow-hidden rounded-[14px] border border-control-border bg-card">
-                {CHEAT_TYPES.map((option) => (
+                {cheatTypes.map((option) => (
                   <Pressable
                     key={option.type}
                     accessibilityRole="button"
@@ -224,7 +234,7 @@ export default function CheatEditScreen() {
                   autoCorrect={false}
                   spellCheck={false}
                   accessibilityLabel="Cheat code"
-                  placeholder="0300 1A2C 0000 0063"
+                  placeholder={isDs ? '021C 4F1C 0000 270F' : '0300 1A2C 0000 0063'}
                   placeholderTextColor={palette.muted}
                   cursorColor={palette.accent.DEFAULT}
                   onChangeText={changeCode}
@@ -248,9 +258,11 @@ export default function CheatEditScreen() {
               </View>
             )}
             <Text className="font-inter text-[13px] leading-[18px] text-muted">
-              {type === 'auto'
-                ? 'One code per line: 12 or 16 hex digits. Spaces are ignored.'
-                : 'One code per line: 8-digit address, then a 4- or 8-digit value. Spaces and colons are ignored.'}
+              {type === 'ards'
+                ? 'One code per line: two 8-digit hex words, 16 digits in all. Spaces are ignored.'
+                : type === 'auto'
+                  ? 'One code per line: 12 or 16 hex digits. Spaces are ignored.'
+                  : 'One code per line: 8-digit address, then a 4- or 8-digit value. Spaces and colons are ignored.'}
             </Text>
             {failed && (
               <Text

@@ -301,8 +301,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       }
       KrsEmulator.setControllerMapping(JSON.stringify(loadControllerMapping()));
       await applyVideoSettings(loadSettings().video).catch(() => {});
-      // Cheat codes are checked against the GBA's formats, so DS games don't take them yet.
-      if (saveId.current && !isDs) {
+      if (saveId.current) {
         await KrsEmulator.setCheats(activeCheatCodes(loadCheats(saveId.current))).catch(() =>
           showToast({ message: "Couldn't apply your cheats." })
         );
@@ -470,7 +469,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
           quickSlotSavedAt={quickSlotSavedAt}
           cheatsOn={cheatsOn}
           onOpenSaveStates={() => openSubScreen('/save-states?inGame=1')}
-          onOpenCheats={isDs ? undefined : () => openSubScreen('/cheats?inGame=1')}
+          onOpenCheats={() => openSubScreen('/cheats?inGame=1')}
           onOpenScreenFilter={() => openSubScreen('/screen-filter?inGame=1')}
           onOpenControls={openControlEditor}
           onOpenScreenLayout={isDs ? openScreenLayout : undefined}

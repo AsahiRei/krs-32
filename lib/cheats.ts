@@ -1,6 +1,9 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-export type CheatType = 'raw' | 'encA' | 'encB' | 'auto';
+import type { GameSystem } from '@/lib/systems';
+
+/** GBA formats, plus 'ards' for Action Replay DS codes, the only format the DS core reads. */
+export type CheatType = 'raw' | 'encA' | 'encB' | 'auto' | 'ards';
 
 export type Cheat = {
   id: string;
@@ -10,12 +13,22 @@ export type Cheat = {
   enabled: boolean;
 };
 
-export const CHEAT_TYPES: { type: CheatType; label: string; tag: string }[] = [
+type CheatTypeOption = { type: CheatType; label: string; tag: string };
+
+export const CHEAT_TYPES: CheatTypeOption[] = [
   { type: 'raw', label: 'Raw address · value', tag: 'RAW' },
   { type: 'encA', label: 'Encrypted type A', tag: 'ENC·A' },
   { type: 'encB', label: 'Encrypted type B', tag: 'ENC·B' },
   { type: 'auto', label: 'Auto-detect', tag: 'AUTO' },
 ];
+
+const DS_CHEAT_TYPES: CheatTypeOption[] = [{ type: 'ards', label: 'Action Replay DS', tag: 'AR DS' }];
+
+/** The code formats a system's core understands; the first is the default for new cheats. */
+export const cheatTypesFor = (system: GameSystem) =>
+  system === 'nds' ? DS_CHEAT_TYPES : CHEAT_TYPES;
+
+const ALL_CHEAT_TYPES = [...CHEAT_TYPES, ...DS_CHEAT_TYPES];
 
 export type CodeIssue = {
   line: number;
@@ -44,7 +57,7 @@ function isGbaAddress(hex: string) {
 const stateFolder = (saveId: string) => new Directory(Paths.document, 'states', saveId);
 const cheatsFile = (saveId: string) => new File(stateFolder(saveId), 'cheats.json');
 
-const CHEAT_TYPE_SET = new Set<string>(CHEAT_TYPES.map((option) => option.type));
+const CHEAT_TYPE_SET = new Set<string>(ALL_CHEAT_TYPES.map((option) => option.type));
 
 function isCheat(value: unknown): value is Cheat {
   if (!value || typeof value !== 'object') return false;
@@ -108,10 +121,11 @@ export const newCheatId = () =>
 export const codeLines = (code: string) => code.split('\n').filter((line) => line.trim());
 
 export const cheatTag = (type: CheatType) =>
-  CHEAT_TYPES.find((option) => option.type === type)?.tag ?? '';
+  ALL_CHEAT_TYPES.find((option) => option.type === type)?.tag ?? '';
 
 function acceptedLengths(type: CheatType) {
-  // Raw codes may be a 32-bit write (8-digit value) or a 16-bit write (4-digit value).
+  // Raw codes may be a 32-bit write (8-digit value) or a 16-bit write (4-digit value). Action
+  // Replay DS lines are always two 8-digit words.
   return type === 'auto' || type === 'raw'
     ? [FULL_CODE_DIGITS, SHORT_CODE_DIGITS]
     : [FULL_CODE_DIGITS];
@@ -198,7 +212,8 @@ function toCoreLine(line: string, type: CheatType) {
   const digits = line.replace(SEPARATORS, '').toUpperCase();
   const address = digits.slice(0, 8);
   const value = digits.slice(8);
-  // The core treats address:value as a plain memory write, and detects encrypted formats itself.
+  // mGBA treats address:value as a plain memory write, and detects encrypted formats itself.
+  // melonDS reads Action Replay DS lines as two words separated by a space.
   return type === 'raw' ? `${address}:${value}` : `${address} ${value}`;
 }
 

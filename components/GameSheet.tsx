@@ -253,12 +253,7 @@ export function GameSheet({
                 value={`${usedSlots} / ${SLOT_COUNT}`}
                 onPress={onOpenSaveStates}
               />
-              {/* The Player only applies cheats to GBA games so far. */}
-              {game.system === 'nds' ? (
-                <ActionRow label="Cheats" value="GBA only" />
-              ) : (
-                <ActionRow label="Cheats" value={`${cheatsOn} on`} onPress={onOpenCheats} />
-              )}
+              <ActionRow label="Cheats" value={`${cheatsOn} on`} onPress={onOpenCheats} />
               <ActionRow
                 label={game.coverFile ? 'Change cover image' : 'Add cover image'}
                 onPress={() => updateCover(() => chooseCover(game.id))}
