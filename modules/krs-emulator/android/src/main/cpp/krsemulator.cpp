@@ -3,14 +3,19 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <oboe/Oboe.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
-#include <cmath>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,17 +32,103 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "KrsEmulator", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "KrsEmulator", __VA_ARGS__)
 
+// Newer than the libretro.h that ships with mGBA.
+#ifndef RETRO_DEVICE_ID_POINTER_IS_OFFSCREEN
+#define RETRO_DEVICE_ID_POINTER_IS_OFFSCREEN 15
+#endif
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Matches the system numbers in KrsEmulatorNative.kt.
+enum class System { Gba = 0, Nds = 1 };
+
 // The GBA addresses at most 32 MB of ROM; mGBA ignores anything past that, so slightly
 // oversized (padded) dumps still load. Beyond this it's surely not a GBA ROM.
-constexpr size_t kMaxRomFileSize = 64 * 1024 * 1024;
-constexpr int kTextureSize = 256;
-constexpr int kGameWidth = 240;
-constexpr int kGameHeight = 160;
+constexpr size_t kMaxGbaRomSize = 64 * 1024 * 1024;
+// The largest DS cartridges are 512 MB.
+constexpr size_t kMaxNdsRomSize = 512 * 1024 * 1024;
+constexpr size_t kNdsHeaderSize = 0x200;
 constexpr int kSaveCheckFrames = 120;
+
+// --- Cores ----------------------------------------------------------------------------------------
+
+#define KRS_CORE_FUNCTIONS(X)        \
+  X(retro_set_environment)           \
+  X(retro_set_video_refresh)         \
+  X(retro_set_audio_sample)          \
+  X(retro_set_audio_sample_batch)    \
+  X(retro_set_input_poll)            \
+  X(retro_set_input_state)           \
+  X(retro_init)                      \
+  X(retro_deinit)                    \
+  X(retro_api_version)               \
+  X(retro_get_system_info)           \
+  X(retro_get_system_av_info)        \
+  X(retro_reset)                     \
+  X(retro_run)                       \
+  X(retro_serialize_size)            \
+  X(retro_serialize)                 \
+  X(retro_unserialize)               \
+  X(retro_cheat_reset)               \
+  X(retro_cheat_set)                 \
+  X(retro_load_game)                 \
+  X(retro_unload_game)               \
+  X(retro_get_memory_data)           \
+  X(retro_get_memory_size)
+
+// A libretro core opened at run time. Every core exports the same retro_* names, so they can't
+// all be linked into this library; each is opened privately and called through these pointers.
+struct CoreLibrary {
+  void *handle = nullptr;
+#define KRS_CORE_MEMBER(name) decltype(&::name) name = nullptr;
+  KRS_CORE_FUNCTIONS(KRS_CORE_MEMBER)
+#undef KRS_CORE_MEMBER
+};
+
+const char *coreFileName(System system) {
+  return system == System::Nds ? "libmelondsds_libretro.so" : "libmgba_libretro.so";
+}
+
+// Opens the system's core the first time it's needed. Cores stay loaded for the life of the app,
+// so the returned pointer never dangles. Null if this device's build doesn't include the core.
+const CoreLibrary *loadCore(System system) {
+  static std::mutex mutex;
+  static CoreLibrary cores[2];
+  std::lock_guard<std::mutex> lock(mutex);
+  CoreLibrary &core = cores[static_cast<int>(system)];
+  if (core.handle) return &core;
+
+  void *handle = dlopen(coreFileName(system), RTLD_NOW | RTLD_LOCAL);
+  if (!handle) {
+    LOGE("Could not open %s: %s", coreFileName(system), dlerror());
+    return nullptr;
+  }
+  CoreLibrary loaded;
+  bool complete = true;
+#define KRS_CORE_LOAD(name)                                                      \
+  loaded.name = reinterpret_cast<decltype(loaded.name)>(dlsym(handle, #name));   \
+  if (!loaded.name) {                                                            \
+    LOGE("%s is missing %s", coreFileName(system), #name);                       \
+    complete = false;                                                            \
+  }
+  KRS_CORE_FUNCTIONS(KRS_CORE_LOAD)
+#undef KRS_CORE_LOAD
+  if (!complete) {
+    dlclose(handle);
+    return nullptr;
+  }
+  loaded.handle = handle;
+  core = loaded;
+  return &core;
+}
+
+// The running game's core. Set before the emulator thread starts and cleared after it ends.
+const CoreLibrary *gCore = nullptr;
+System gSystem = System::Gba;
+
+// --- Audio ----------------------------------------------------------------------------------------
 
 // Single-producer (emulator thread), single-consumer (audio callback) stereo ring buffer.
 class AudioRing {
@@ -169,6 +260,8 @@ class AudioOut final : public oboe::AudioStreamDataCallback,
 
 AudioOut gAudio;
 
+// --- Video ----------------------------------------------------------------------------------------
+
 constexpr int kFilterSmooth = 1;
 constexpr int kFilterLcd = 2;
 constexpr int kFilterScanlines = 3;
@@ -180,6 +273,38 @@ std::atomic<int> gVideoFilter{0};
 std::atomic<float> gVideoStrength{0.4f};
 std::atomic<int> gVideoAspect{0};
 std::atomic<int> gVideoScaling{1};
+
+// Where each of the DS's two screens goes within the surface, in pixels from the top left. The
+// core draws them stacked in one frame; index 0 is its top half and 1 its bottom (touch) half. A
+// rectangle with no width is hidden. Set from the UI thread, read when drawing.
+struct ScreenRect {
+  float left = 0;
+  float top = 0;
+  float width = 0;
+  float height = 0;
+};
+
+std::mutex gScreenRectsMutex;
+ScreenRect gScreenRects[2];
+bool gScreenRectsSet = false;
+
+// The pixel format the core asked for. Only the emulator thread touches it.
+retro_pixel_format gPixelFormat = RETRO_PIXEL_FORMAT_RGB565;
+
+size_t bytesPerPixel(retro_pixel_format format) {
+  return format == RETRO_PIXEL_FORMAT_XRGB8888 ? 4 : 2;
+}
+
+// A copy of the latest frame exactly as the core produced it.
+struct Frame {
+  std::vector<uint8_t> pixels;
+  int width = 0;
+  int height = 0;
+  size_t pitch = 0;
+  retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
+
+  bool empty() const { return pixels.empty(); }
+};
 
 GLuint compileShader(GLenum type, const char *source) {
   const GLuint shader = glCreateShader(type);
@@ -233,17 +358,20 @@ class Renderer {
       precision highp float;
       varying vec2 vTexCoord;
       uniform sampler2D uTexture;
+      uniform vec2 uTextureSize;
       uniform int uFilter;
       uniform float uStrength;
+      uniform bool uSwapRedBlue;
       void main() {
         vec4 color = texture2D(uTexture, vTexCoord);
-        vec2 cell = fract(vTexCoord * 256.0);
+        if (uSwapRedBlue) color = color.bgra;
+        vec2 cell = fract(vTexCoord * uTextureSize);
         if (uFilter == 2 && (cell.x > 0.75 || cell.y > 0.75)) {
           color.rgb *= 1.0 - uStrength;
         } else if (uFilter == 3 && cell.y > 0.5) {
           color.rgb *= 1.0 - uStrength;
         }
-        gl_FragColor = color;
+        gl_FragColor = vec4(color.rgb, 1.0);
       })"));
     glBindAttribLocation(program_, 0, "aPosition");
     glBindAttribLocation(program_, 1, "aTexCoord");
@@ -251,6 +379,8 @@ class Renderer {
     glUseProgram(program_);
     filterUniform_ = glGetUniformLocation(program_, "uFilter");
     strengthUniform_ = glGetUniformLocation(program_, "uStrength");
+    textureSizeUniform_ = glGetUniformLocation(program_, "uTextureSize");
+    swapUniform_ = glGetUniformLocation(program_, "uSwapRedBlue");
 
     glGenTextures(1, &texture_);
     glBindTexture(GL_TEXTURE_2D, texture_);
@@ -258,9 +388,8 @@ class Renderer {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, kTextureSize, kTextureSize, 0, GL_RGB,
-                 GL_UNSIGNED_SHORT_5_6_5, nullptr);
+    textureWidth_ = 0;
+    textureHeight_ = 0;
     return true;
   }
 
@@ -276,11 +405,14 @@ class Renderer {
     context_ = EGL_NO_CONTEXT;
     program_ = 0;
     texture_ = 0;
+    textureWidth_ = 0;
+    textureHeight_ = 0;
   }
 
   bool ready() const { return surface_ != EGL_NO_SURFACE; }
 
-  void draw(const void *data, int width, int height) {
+  void draw(const Frame &frame) {
+    if (frame.empty()) return;
     EGLint viewWidth = 0;
     EGLint viewHeight = 0;
     eglQuerySurface(display_, surface_, EGL_WIDTH, &viewWidth);
@@ -288,7 +420,6 @@ class Renderer {
     glViewport(0, 0, viewWidth, viewHeight);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    applyPictureViewport(viewWidth, viewHeight);
 
     const int filter = gVideoFilter.load();
     const GLint sampling = filter == kFilterSmooth ? GL_LINEAR : GL_NEAREST;
@@ -297,52 +428,105 @@ class Renderer {
     glUniform1i(filterUniform_, filter == kFilterLcd || filter == kFilterScanlines ? filter : 0);
     glUniform1f(strengthUniform_, gVideoStrength.load());
 
-    // mGBA's frame buffer is always 256 pixels wide, wider than the visible 240.
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kTextureSize, height, GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
-                    data);
+    // OpenGL ES 2 can't skip row padding, so the texture spans the full pitch and the padding is
+    // cropped off with texture coordinates. mGBA's 240-pixel rows are 256 pixels apart, for one.
+    const bool wide = frame.format == RETRO_PIXEL_FORMAT_XRGB8888;
+    const int textureWidth = static_cast<int>(frame.pitch / bytesPerPixel(frame.format));
+    const GLenum format = wide ? GL_RGBA : GL_RGB;
+    const GLenum type = wide ? GL_UNSIGNED_BYTE : GL_UNSIGNED_SHORT_5_6_5;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, wide ? 4 : 2);
+    if (textureWidth != textureWidth_ || frame.height != textureHeight_ || wide != textureWide_) {
+      glTexImage2D(GL_TEXTURE_2D, 0, format, textureWidth, frame.height, 0, format, type,
+                   frame.pixels.data());
+      textureWidth_ = textureWidth;
+      textureHeight_ = frame.height;
+      textureWide_ = wide;
+    } else {
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureWidth, frame.height, format, type,
+                      frame.pixels.data());
+    }
+    // XRGB8888 is B, G, R, X in memory, which OpenGL ES 2 can only take as RGBA.
+    glUniform1i(swapUniform_, wide ? 1 : 0);
+    glUniform2f(textureSizeUniform_, static_cast<GLfloat>(textureWidth),
+                static_cast<GLfloat>(frame.height));
 
-    const GLfloat maxU = static_cast<GLfloat>(width) / kTextureSize;
-    const GLfloat maxV = static_cast<GLfloat>(height) / kTextureSize;
-    const GLfloat vertices[] = {-1, 1, 0, 0, 1, 1, maxU, 0, -1, -1, 0, maxV, 1, -1, maxU, maxV};
+    const GLfloat maxU = static_cast<GLfloat>(frame.width) / textureWidth;
+    ScreenRect screens[2];
+    bool split = false;
+    if (gSystem == System::Nds) {
+      std::lock_guard<std::mutex> lock(gScreenRectsMutex);
+      split = gScreenRectsSet;
+      screens[0] = gScreenRects[0];
+      screens[1] = gScreenRects[1];
+    }
+    if (split) {
+      // Each half of the stacked frame goes into its own rectangle.
+      for (int half = 0; half < 2; ++half) {
+        const ScreenRect &screen = screens[half];
+        if (screen.width <= 0 || screen.height <= 0) continue;
+        glViewport(static_cast<GLint>(screen.left),
+                   static_cast<GLint>(viewHeight - screen.top - screen.height),
+                   static_cast<GLsizei>(screen.width), static_cast<GLsizei>(screen.height));
+        drawQuad(maxU, half * 0.5f, half * 0.5f + 0.5f);
+      }
+    } else {
+      applyPictureViewport(viewWidth, viewHeight, frame.width, frame.height);
+      drawQuad(maxU, 0, 1);
+    }
+    eglSwapBuffers(display_, surface_);
+  }
+
+ private:
+  // Draws the texture's columns up to maxU and rows minV to maxV over the whole viewport.
+  static void drawQuad(GLfloat maxU, GLfloat minV, GLfloat maxV) {
+    const GLfloat vertices[] = {-1, 1, 0, minV, 1, 1, maxU, minV, -1, -1, 0, maxV, 1, -1, maxU, maxV};
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), vertices);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), vertices + 2);
     glEnableVertexAttribArray(1);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    eglSwapBuffers(display_, surface_);
   }
 
- private:
   // Sets where in the surface the picture goes for the chosen aspect ratio and scaling.
-  static void applyPictureViewport(int surfaceWidth, int surfaceHeight) {
-    const int aspectMode = gVideoAspect.load();
-    if (aspectMode == kAspectStretch) {
-      glViewport(0, 0, surfaceWidth, surfaceHeight);
-      return;
+  static void applyPictureViewport(int surfaceWidth, int surfaceHeight, int frameWidth,
+                                   int frameHeight) {
+    float width = static_cast<float>(surfaceWidth);
+    float height = static_cast<float>(surfaceHeight);
+    if (gVideoAspect.load() != kAspectStretch) {
+      // 4:3 imitates a TV for GBA games; it would only squash the DS's two stacked screens.
+      const float aspect = gVideoAspect.load() == kAspect4By3 && gSystem == System::Gba
+                               ? 4.0f / 3.0f
+                               : static_cast<float>(frameWidth) / frameHeight;
+      height = std::min(height, width / aspect);
+      if (gVideoScaling.load() == kScalingInteger) {
+        height = std::max(1.0f, std::floor(height / frameHeight)) * frameHeight;
+      }
+      width = height * aspect;
     }
-
-    const float aspect =
-        aspectMode == kAspect4By3 ? 4.0f / 3.0f : static_cast<float>(kGameWidth) / kGameHeight;
-    float height = std::min(static_cast<float>(surfaceHeight), surfaceWidth / aspect);
-    if (gVideoScaling.load() == kScalingInteger) {
-      height = std::max(1.0f, std::floor(height / kGameHeight)) * kGameHeight;
-    }
-    const float width = height * aspect;
-    glViewport(static_cast<GLint>((surfaceWidth - width) / 2),
-               static_cast<GLint>((surfaceHeight - height) / 2), static_cast<GLsizei>(width),
-               static_cast<GLsizei>(height));
+    const float left = std::floor((surfaceWidth - width) / 2);
+    const float top = std::floor((surfaceHeight - height) / 2);
+    // OpenGL counts from the bottom; the stored rectangle counts from the top like Android does.
+    glViewport(static_cast<GLint>(left), static_cast<GLint>(surfaceHeight - top - height),
+               static_cast<GLsizei>(width), static_cast<GLsizei>(height));
   }
 
   GLint filterUniform_ = -1;
   GLint strengthUniform_ = -1;
+  GLint textureSizeUniform_ = -1;
+  GLint swapUniform_ = -1;
   EGLDisplay display_ = EGL_NO_DISPLAY;
   EGLSurface surface_ = EGL_NO_SURFACE;
   EGLContext context_ = EGL_NO_CONTEXT;
   GLuint program_ = 0;
   GLuint texture_ = 0;
+  int textureWidth_ = 0;
+  int textureHeight_ = 0;
+  bool textureWide_ = false;
 };
 
 Renderer gRenderer;
+
+// --- Emulator state -------------------------------------------------------------------------------
 
 std::thread gEmuThread;
 std::atomic<bool> gRunning{false};
@@ -352,6 +536,7 @@ std::atomic<bool> gBackgrounded{false};
 std::atomic<bool> gFastForward{false};
 std::atomic<bool> gPadFastForward{false};
 std::atomic<double> gFastForwardSpeed{2.0};
+std::atomic<double> gFrameSeconds{1.0 / 60};
 
 bool isFastForwarding() {
   return gFastForward.load(std::memory_order_relaxed) ||
@@ -359,6 +544,10 @@ bool isFastForwarding() {
 }
 std::atomic<uint32_t> gButtons{0};
 std::atomic<uint32_t> gPadButtons{0};
+
+// The touchscreen, packed so a press and its position always change together: bit 32 is set while
+// touching, and the low 32 bits hold the libretro x and y coordinates as two int16s.
+std::atomic<uint64_t> gPointer{0};
 
 std::mutex gStateMutex;
 std::condition_variable gStateChanged;
@@ -371,12 +560,11 @@ std::atomic<uint64_t> gSaveWrites{0};
 std::atomic<uint64_t> gSaveBytes{0};
 
 std::string gSavePath;
+std::string gSaveDir;
 std::string gSystemDir;
-// Set when the ROM's header would make the real BIOS hang, so the core boots the game directly.
+// Set when the ROM's header would make the real GBA BIOS hang, so the core boots the game directly.
 bool gSkipBios = false;
-std::vector<uint8_t> gLastFrame;
-int gLastFrameWidth = 0;
-int gLastFrameHeight = 0;
+Frame gLastFrame;
 
 std::mutex gCommandMutex;
 std::vector<std::function<void()>> gCommands;
@@ -386,8 +574,8 @@ std::vector<uint8_t> gSaveCandidate;
 // Writes save memory to disk. Unless forced, a change must be identical across two checks so a
 // save the game is still in the middle of writing never replaces the last good file.
 void flushSave(bool force) {
-  auto *memory = static_cast<const uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-  const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+  auto *memory = static_cast<const uint8_t *>(gCore->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+  const size_t size = gCore->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
   if (!memory || size == 0) return;
 
   if (gLastSave.size() == size && std::memcmp(gLastSave.data(), memory, size) == 0) {
@@ -421,8 +609,8 @@ void flushSave(bool force) {
 }
 
 void loadSave() {
-  auto *memory = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-  const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+  auto *memory = static_cast<uint8_t *>(gCore->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+  const size_t size = gCore->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
   gSaveCandidate.clear();
   gLastSave.clear();
   if (!memory || size == 0) return;
@@ -436,33 +624,106 @@ void loadSave() {
   gLastSave.assign(memory, memory + size);
 }
 
+// --- libretro callbacks ---------------------------------------------------------------------------
+
+struct CoreVariable {
+  const char *key;
+  const char *value;
+};
+
+// melonDS DS settings that suit a phone. Anything not listed keeps the core's own default.
+constexpr CoreVariable kMelonDsVariables[] = {
+    // The player lays its controls out around one picture with the screens stacked, and maps
+    // touches onto the bottom half, so the layout must stay fixed.
+    {"melonds_number_of_screen_layouts", "1"},
+    {"melonds_screen_layout1", "top-bottom"},
+    {"melonds_screen_gap", "0"},
+    // Touches come from the real touchscreen, so there's no need for a cursor.
+    {"melonds_touch_mode", "touch"},
+    {"melonds_show_cursor", "disabled"},
+    // Real BIOS and firmware are used when they're in the system folder, and melonDS's own
+    // replacements otherwise.
+    {"melonds_sysfile_mode", "native"},
+    {"melonds_console_mode", "ds"},
+};
+
+const char *coreVariable(const char *key) {
+  if (!key) return nullptr;
+  if (gSystem == System::Gba) {
+    if (gSkipBios && std::strcmp(key, "mgba_skip_bios") == 0) return "ON";
+    return nullptr;
+  }
+  for (const auto &variable : kMelonDsVariables) {
+    if (std::strcmp(key, variable.key) == 0) return variable.value;
+  }
+  return nullptr;
+}
+
+void coreLog(retro_log_level level, const char *format, ...) {
+  // Debug output from melonDS is far too chatty to keep.
+  if (level == RETRO_LOG_DEBUG) return;
+  char message[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(message, sizeof(message), format, args);
+  va_end(args);
+  const int priority = level == RETRO_LOG_ERROR  ? ANDROID_LOG_ERROR
+                       : level == RETRO_LOG_WARN ? ANDROID_LOG_WARN
+                                                 : ANDROID_LOG_INFO;
+  __android_log_print(priority, "KrsCore", "%s", message);
+}
+
 bool environment(unsigned command, void *data) {
-  if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
-    return *static_cast<const retro_pixel_format *>(data) == RETRO_PIXEL_FORMAT_RGB565;
-  }
-  if (command == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY) {
-    *static_cast<const char **>(data) = gSystemDir.c_str();
-    return true;
-  }
-  if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
-    auto *variable = static_cast<retro_variable *>(data);
-    if (gSkipBios && variable->key && std::strcmp(variable->key, "mgba_skip_bios") == 0) {
-      variable->value = "ON";
+  switch (command) {
+    case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
+      const auto format = *static_cast<const retro_pixel_format *>(data);
+      if (format != RETRO_PIXEL_FORMAT_RGB565 && format != RETRO_PIXEL_FORMAT_XRGB8888) {
+        return false;
+      }
+      gPixelFormat = format;
       return true;
     }
-    variable->value = nullptr;
-    return false;
+    case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+      *static_cast<const char **>(data) = gSystemDir.c_str();
+      return true;
+    case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+      *static_cast<const char **>(data) = gSaveDir.c_str();
+      return true;
+    case RETRO_ENVIRONMENT_GET_VARIABLE: {
+      auto *variable = static_cast<retro_variable *>(data);
+      variable->value = coreVariable(variable->key);
+      return variable->value != nullptr;
+    }
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
+      static_cast<retro_log_callback *>(data)->log = coreLog;
+      return true;
+    case RETRO_ENVIRONMENT_SET_MESSAGE:
+      if (const auto *message = static_cast<const retro_message *>(data); message->msg) {
+        LOGI("Core message: %s", message->msg);
+      }
+      return true;
+    case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
+      // The picture's size comes with each frame, so only the timing matters here.
+      const auto *av = static_cast<const retro_system_av_info *>(data);
+      if (av->timing.fps > 0) gFrameSeconds.store(1.0 / av->timing.fps);
+      return true;
+    }
+    case RETRO_ENVIRONMENT_SET_GEOMETRY:
+      return true;
+    default:
+      return false;
   }
-  return false;
 }
 
 void videoRefresh(const void *data, unsigned width, unsigned height, size_t pitch) {
-  if (!data || pitch != kTextureSize * sizeof(uint16_t)) return;
+  if (!data || width == 0 || height == 0 || pitch < width * bytesPerPixel(gPixelFormat)) return;
   const auto *pixels = static_cast<const uint8_t *>(data);
-  gLastFrame.assign(pixels, pixels + pitch * height);
-  gLastFrameWidth = static_cast<int>(width);
-  gLastFrameHeight = static_cast<int>(height);
-  if (gRenderer.ready()) gRenderer.draw(data, gLastFrameWidth, gLastFrameHeight);
+  gLastFrame.pixels.assign(pixels, pixels + pitch * height);
+  gLastFrame.width = static_cast<int>(width);
+  gLastFrame.height = static_cast<int>(height);
+  gLastFrame.pitch = pitch;
+  gLastFrame.format = gPixelFormat;
+  if (gRenderer.ready()) gRenderer.draw(gLastFrame);
 }
 
 size_t audioBatch(const int16_t *samples, size_t frames) {
@@ -481,12 +742,34 @@ void audioSample(int16_t left, int16_t right) {
 
 void inputPoll() {}
 
-int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
-  if (port != 0 || device != RETRO_DEVICE_JOYPAD || id >= 16) return 0;
-  const uint32_t held = gButtons.load(std::memory_order_relaxed) |
-                        gPadButtons.load(std::memory_order_relaxed);
-  return static_cast<int16_t>((held >> id) & 1);
+int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
+  if (port != 0) return 0;
+  if (device == RETRO_DEVICE_JOYPAD) {
+    if (id >= 16) return 0;
+    const uint32_t held = gButtons.load(std::memory_order_relaxed) |
+                          gPadButtons.load(std::memory_order_relaxed);
+    return static_cast<int16_t>((held >> id) & 1);
+  }
+  if (device == RETRO_DEVICE_POINTER && index == 0) {
+    const uint64_t pointer = gPointer.load(std::memory_order_relaxed);
+    const bool pressed = (pointer >> 32) & 1;
+    switch (id) {
+      case RETRO_DEVICE_ID_POINTER_X:
+        return static_cast<int16_t>(pointer & 0xFFFF);
+      case RETRO_DEVICE_ID_POINTER_Y:
+        return static_cast<int16_t>((pointer >> 16) & 0xFFFF);
+      case RETRO_DEVICE_ID_POINTER_PRESSED:
+        return pressed ? 1 : 0;
+      case RETRO_DEVICE_ID_POINTER_IS_OFFSCREEN:
+        return pressed ? 0 : 1;
+      default:
+        return 0;
+    }
+  }
+  return 0;
 }
+
+// --- Emulator thread ------------------------------------------------------------------------------
 
 // GL state belongs to the emulator thread, so surface changes are applied here.
 void applySurfaceChange() {
@@ -495,9 +778,7 @@ void applySurfaceChange() {
   gRenderer.destroy();
   if (gWindow && !gRenderer.init(gWindow)) LOGE("Could not initialise the renderer");
   // A new surface starts black, which would blank the picture behind the pause menu.
-  if (gRenderer.ready() && !gLastFrame.empty()) {
-    gRenderer.draw(gLastFrame.data(), gLastFrameWidth, gLastFrameHeight);
-  }
+  if (gRenderer.ready()) gRenderer.draw(gLastFrame);
   gWindowDirty = false;
   gStateChanged.notify_all();
 }
@@ -528,10 +809,10 @@ bool runOnEmulatorThread(std::function<bool()> work) {
 }
 
 bool writeStateFile(const std::string &path) {
-  const size_t size = retro_serialize_size();
+  const size_t size = gCore->retro_serialize_size();
   if (size == 0) return false;
   std::vector<uint8_t> state(size);
-  if (!retro_serialize(state.data(), size)) return false;
+  if (!gCore->retro_serialize(state.data(), size)) return false;
 
   const std::string tempPath = path + ".tmp";
   FILE *file = std::fopen(tempPath.c_str(), "wb");
@@ -552,7 +833,7 @@ bool readStateFile(const std::string &path) {
   std::vector<uint8_t> state(size > 0 ? static_cast<size_t>(size) : 0);
   const bool read = !state.empty() && std::fread(state.data(), 1, state.size(), file) == state.size();
   std::fclose(file);
-  return read && retro_unserialize(state.data(), state.size());
+  return read && gCore->retro_unserialize(state.data(), state.size());
 }
 
 void waitWhilePaused() {
@@ -570,30 +851,32 @@ void waitWhilePaused() {
 }
 
 void emulatorMain(std::vector<uint8_t> rom, std::promise<std::string> result) {
-  retro_set_environment(environment);
-  retro_set_video_refresh(videoRefresh);
-  retro_set_audio_sample(audioSample);
-  retro_set_audio_sample_batch(audioBatch);
-  retro_set_input_poll(inputPoll);
-  retro_set_input_state(inputState);
-  retro_init();
-  gLastFrame.clear();
+  gPixelFormat = RETRO_PIXEL_FORMAT_RGB565;
+  gCore->retro_set_environment(environment);
+  gCore->retro_set_video_refresh(videoRefresh);
+  gCore->retro_set_audio_sample(audioSample);
+  gCore->retro_set_audio_sample_batch(audioBatch);
+  gCore->retro_set_input_poll(inputPoll);
+  gCore->retro_set_input_state(inputState);
+  gCore->retro_init();
+  gLastFrame = Frame();
 
   retro_game_info game{};
   game.data = rom.data();
   game.size = rom.size();
-  if (!retro_load_game(&game)) {
-    retro_deinit();
+  if (!gCore->retro_load_game(&game)) {
+    gCore->retro_deinit();
     gRunning.store(false);
     result.set_value("The emulator could not load this ROM.");
     return;
   }
+  // The core keeps its own copy, and DS ROMs can be hundreds of megabytes.
   std::vector<uint8_t>().swap(rom);
   loadSave();
 
   retro_system_av_info av{};
-  retro_get_system_av_info(&av);
-  const double frameSeconds = 1.0 / av.timing.fps;
+  gCore->retro_get_system_av_info(&av);
+  gFrameSeconds.store(1.0 / av.timing.fps);
   LOGI("Core ready: %.4f fps, %.0f Hz", av.timing.fps, av.timing.sample_rate);
 
   gRing.clear();
@@ -622,7 +905,7 @@ void emulatorMain(std::vector<uint8_t> rom, std::promise<std::string> result) {
     }
 
     const auto frameStart = Clock::now();
-    retro_run();
+    gCore->retro_run();
     const auto frameEnd = Clock::now();
     windowCost += std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
     windowFrames++;
@@ -642,6 +925,7 @@ void emulatorMain(std::vector<uint8_t> rom, std::promise<std::string> result) {
     }
 
     // Nudge the frame rate by up to 1% to keep the audio buffer near its target without crackle.
+    const double frameSeconds = gFrameSeconds.load();
     const double fillRatio = static_cast<double>(gRing.fill()) / AudioRing::kCapacity;
     const double correction = 1.0 + 0.01 * (fillRatio - 0.25);
     const double frameTime = isFastForwarding() ? frameSeconds / gFastForwardSpeed.load()
@@ -666,8 +950,8 @@ void emulatorMain(std::vector<uint8_t> rom, std::promise<std::string> result) {
     gWindowDirty = true;
     gStateChanged.notify_all();
   }
-  retro_unload_game();
-  retro_deinit();
+  gCore->retro_unload_game();
+  gCore->retro_deinit();
   gRunning.store(false);
 }
 
@@ -678,17 +962,64 @@ void stopEmulator() {
   gQuit.store(false);
 }
 
-// Only rejects files that can't be a GBA ROM at all. mGBA itself decides whether it can run the
-// rest: ROM hacks and translations often ship with a stale header checksum or a cleared fixed
-// byte, and mGBA plays those fine (only the real BIOS refuses them, see headerIsValid).
-std::string validateRom(const std::vector<uint8_t> &rom) {
+// --- ROM checks -----------------------------------------------------------------------------------
+
+size_t maxRomSize(System system) {
+  return system == System::Nds ? kMaxNdsRomSize : kMaxGbaRomSize;
+}
+
+const char *systemName(System system) { return system == System::Nds ? "DS" : "GBA"; }
+
+// Reads the whole ROM from a file descriptor. It's read here rather than handed over from Kotlin
+// so a large DS ROM never has to fit in the Java heap. Returns an error message, or "" on success.
+std::string readRom(int fd, System system, std::vector<uint8_t> &rom) {
+  const size_t limit = maxRomSize(system);
+  struct stat info {};
+  if (fstat(fd, &info) == 0 && info.st_size > 0) {
+    if (static_cast<uint64_t>(info.st_size) > limit) {
+      return std::string("This file is not a valid ") + systemName(system) + " ROM (too large).";
+    }
+    rom.reserve(static_cast<size_t>(info.st_size));
+  }
+
+  // Some document providers hand out pipes, so read until the end instead of trusting the size.
+  constexpr size_t kChunk = 1024 * 1024;
+  while (true) {
+    const size_t used = rom.size();
+    if (used >= limit + 1) {
+      return std::string("This file is not a valid ") + systemName(system) + " ROM (too large).";
+    }
+    const size_t want = std::min(kChunk, limit + 1 - used);
+    rom.resize(used + want);
+    const ssize_t got = read(fd, rom.data() + used, want);
+    if (got < 0 && errno == EINTR) {
+      rom.resize(used);
+      continue;
+    }
+    if (got < 0) return "Could not read this file.";
+    rom.resize(used + static_cast<size_t>(got));
+    if (got == 0) break;
+  }
+  if (rom.size() > limit) {
+    return std::string("This file is not a valid ") + systemName(system) + " ROM (too large).";
+  }
+  return "";
+}
+
+// Only rejects files that can't be a ROM at all. The core itself decides whether it can run the
+// rest: GBA ROM hacks and translations often ship with a stale header checksum or a cleared fixed
+// byte, and mGBA plays those fine (only the real BIOS refuses them, see gbaHeaderIsValid).
+std::string validateRom(const std::vector<uint8_t> &rom, System system) {
+  if (system == System::Nds) {
+    if (rom.size() < kNdsHeaderSize) return "This file is not a valid DS ROM (too small).";
+    return "";
+  }
   if (rom.size() < 0xC0) return "This file is not a valid GBA ROM (too small).";
-  if (rom.size() > kMaxRomFileSize) return "This file is not a valid GBA ROM (too large).";
   return "";
 }
 
 // Whether the real GBA BIOS would accept this header. It locks up on a bad one.
-bool headerIsValid(const std::vector<uint8_t> &rom) {
+bool gbaHeaderIsValid(const std::vector<uint8_t> &rom) {
   if (rom[0xB2] != 0x96) return false;
   int checksum = 0;
   for (size_t i = 0xA0; i <= 0xBC; i++) checksum -= rom[i];
@@ -703,32 +1034,68 @@ std::string toString(JNIEnv *env, jstring value) {
   return result;
 }
 
-retro_system_info systemInfo() {
-  retro_system_info info{};
-  retro_get_system_info(&info);
-  return info;
+bool systemInfo(jint system, retro_system_info &info) {
+  const CoreLibrary *core = loadCore(system == 1 ? System::Nds : System::Gba);
+  if (!core) return false;
+  core->retro_get_system_info(&info);
+  return true;
+}
+
+// Converts the core's pixels to tightly packed RGBA8888, the layout of an ARGB_8888 Bitmap.
+std::vector<uint8_t> toRgba(const Frame &frame) {
+  std::vector<uint8_t> rgba(static_cast<size_t>(frame.width) * frame.height * 4);
+  uint8_t *out = rgba.data();
+  for (int row = 0; row < frame.height; row++) {
+    const uint8_t *line = frame.pixels.data() + row * frame.pitch;
+    for (int column = 0; column < frame.width; column++) {
+      if (frame.format == RETRO_PIXEL_FORMAT_XRGB8888) {
+        uint32_t pixel;
+        std::memcpy(&pixel, line + column * 4, 4);
+        *out++ = (pixel >> 16) & 0xFF;
+        *out++ = (pixel >> 8) & 0xFF;
+        *out++ = pixel & 0xFF;
+      } else {
+        uint16_t pixel;
+        std::memcpy(&pixel, line + column * 2, 2);
+        const uint8_t red = (pixel >> 11) & 0x1F;
+        const uint8_t green = (pixel >> 5) & 0x3F;
+        const uint8_t blue = pixel & 0x1F;
+        *out++ = static_cast<uint8_t>((red << 3) | (red >> 2));
+        *out++ = static_cast<uint8_t>((green << 2) | (green >> 4));
+        *out++ = static_cast<uint8_t>((blue << 3) | (blue >> 2));
+      }
+      *out++ = 0xFF;
+    }
+  }
+  return rgba;
 }
 
 }  // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_coreName(JNIEnv *env, jobject) {
-  return env->NewStringUTF(systemInfo().library_name);
+Java_expo_modules_krsemulator_KrsEmulatorNative_coreName(JNIEnv *env, jobject, jint system) {
+  retro_system_info info{};
+  return systemInfo(system, info) ? env->NewStringUTF(info.library_name) : nullptr;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_coreVersion(JNIEnv *env, jobject) {
-  return env->NewStringUTF(systemInfo().library_version);
+Java_expo_modules_krsemulator_KrsEmulatorNative_coreVersion(JNIEnv *env, jobject, jint system) {
+  retro_system_info info{};
+  return systemInfo(system, info) ? env->NewStringUTF(info.library_version) : nullptr;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_validExtensions(JNIEnv *env, jobject) {
-  return env->NewStringUTF(systemInfo().valid_extensions);
+Java_expo_modules_krsemulator_KrsEmulatorNative_validExtensions(JNIEnv *env, jobject,
+                                                                jint system) {
+  retro_system_info info{};
+  return systemInfo(system, info) ? env->NewStringUTF(info.valid_extensions) : nullptr;
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_libretroApiVersion(JNIEnv *, jobject) {
-  return static_cast<jint>(retro_api_version());
+Java_expo_modules_krsemulator_KrsEmulatorNative_libretroApiVersion(JNIEnv *, jobject,
+                                                                   jint system) {
+  const CoreLibrary *core = loadCore(system == 1 ? System::Nds : System::Gba);
+  return core ? static_cast<jint>(core->retro_api_version()) : 0;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -736,21 +1103,32 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_isAAudioRecommended(JNIEnv *, jo
   return oboe::AudioStreamBuilder::isAAudioRecommended() ? JNI_TRUE : JNI_FALSE;
 }
 
+// Reads the ROM from romFd (which stays the caller's to close) and starts it on the system's core.
 // Returns null on success, or a message describing why the game could not start.
 extern "C" JNIEXPORT jstring JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_start(JNIEnv *env, jobject, jbyteArray romBytes,
-                                                      jstring savePath, jstring systemDir) {
-  std::vector<uint8_t> rom(static_cast<size_t>(env->GetArrayLength(romBytes)));
-  env->GetByteArrayRegion(romBytes, 0, static_cast<jsize>(rom.size()),
-                          reinterpret_cast<jbyte *>(rom.data()));
+Java_expo_modules_krsemulator_KrsEmulatorNative_start(JNIEnv *env, jobject, jint romFd,
+                                                      jint systemId, jstring savePath,
+                                                      jstring saveDir, jstring systemDir) {
+  const System system = systemId == 1 ? System::Nds : System::Gba;
+  const CoreLibrary *core = loadCore(system);
+  if (!core) {
+    return env->NewStringUTF(system == System::Nds
+                                 ? "DS games need a 64-bit device."
+                                 : "The emulator is missing from this build of the app.");
+  }
 
-  const std::string invalid = validateRom(rom);
+  std::vector<uint8_t> rom;
+  std::string invalid = readRom(romFd, system, rom);
+  if (invalid.empty()) invalid = validateRom(rom, system);
   if (!invalid.empty()) return env->NewStringUTF(invalid.c_str());
 
   stopEmulator();
-  gSkipBios = !headerIsValid(rom);
+  gCore = core;
+  gSystem = system;
+  gSkipBios = system == System::Gba && !gbaHeaderIsValid(rom);
   if (gSkipBios) LOGI("ROM header fails the BIOS check; booting without the BIOS intro");
   gSavePath = toString(env, savePath);
+  gSaveDir = toString(env, saveDir);
   gSystemDir = toString(env, systemDir);
   gPaused.store(false);
   gBackgrounded.store(false);
@@ -758,6 +1136,7 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_start(JNIEnv *env, jobject, jbyt
   gPadFastForward.store(false);
   gButtons.store(0);
   gPadButtons.store(0);
+  gPointer.store(0);
   gUnderruns.store(0);
   gOverruns.store(0);
   gSaveWrites.store(0);
@@ -796,6 +1175,30 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_setButtons(JNIEnv *, jobject, ji
   gButtons.store(static_cast<uint32_t>(buttons), std::memory_order_relaxed);
 }
 
+// A touch on the DS touchscreen, as fractions of its width and height from its top left. Touches
+// outside it count as lifting the stylus.
+extern "C" JNIEXPORT void JNICALL
+Java_expo_modules_krsemulator_KrsEmulatorNative_setPointer(JNIEnv *, jobject, jboolean pressed,
+                                                           jfloat x, jfloat y) {
+  const float u = x;
+  // The core stacks the screens with the touchscreen in the bottom half and reads the pointer
+  // across the whole frame.
+  const float v = 0.5f + y * 0.5f;
+  const uint64_t previous = gPointer.load(std::memory_order_relaxed);
+  if (pressed != JNI_TRUE || u < 0 || u > 1 || y < 0 || y > 1) {
+    // Keep the last position: some games read it again on the frame the stylus lifts.
+    gPointer.store(previous & 0xFFFFFFFFull, std::memory_order_relaxed);
+    return;
+  }
+  // libretro spans the picture from -0x7FFF to 0x7FFF on both axes.
+  const auto toAxis = [](float position) {
+    return static_cast<uint16_t>(static_cast<int16_t>(std::lround((position * 2 - 1) * 0x7FFF)));
+  };
+  const uint64_t packed =
+      (1ull << 32) | (static_cast<uint64_t>(toAxis(v)) << 16) | static_cast<uint64_t>(toAxis(u));
+  gPointer.store(packed, std::memory_order_relaxed);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_expo_modules_krsemulator_KrsEmulatorNative_setPadFastForward(JNIEnv *, jobject,
                                                                   jboolean enabled) {
@@ -817,28 +1220,56 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_setVideoSettings(JNIEnv *, jobje
   gVideoScaling.store(scaling);
   // The game may be paused, so the picture has to be redrawn for the change to show.
   runOnEmulatorThread([] {
-    if (gRenderer.ready() && !gLastFrame.empty()) {
-      gRenderer.draw(gLastFrame.data(), gLastFrameWidth, gLastFrameHeight);
-    }
+    if (gRenderer.ready()) gRenderer.draw(gLastFrame);
     return true;
   });
 }
 
-// The current picture as 240x160 RGB565, or null if nothing has been drawn yet.
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_expo_modules_krsemulator_KrsEmulatorNative_getLastFrame(JNIEnv *env, jobject) {
-  auto frame = std::make_shared<std::vector<uint8_t>>();
-  const bool copied = runOnEmulatorThread([frame] {
-    if (gLastFrameWidth != kGameWidth || gLastFrameHeight != kGameHeight) return false;
-    const size_t sourcePitch = kTextureSize * sizeof(uint16_t);
-    const size_t rowBytes = kGameWidth * sizeof(uint16_t);
-    frame->resize(rowBytes * kGameHeight);
-    for (size_t row = 0; row < kGameHeight; row++) {
-      std::memcpy(frame->data() + row * rowBytes, gLastFrame.data() + row * sourcePitch, rowBytes);
+// Where the DS's top and bottom screens go in the surface: left, top, width and height in pixels
+// for each, top screen first. A zero width hides that screen. Null goes back to one picture.
+extern "C" JNIEXPORT void JNICALL
+Java_expo_modules_krsemulator_KrsEmulatorNative_setScreenRects(JNIEnv *env, jobject,
+                                                               jfloatArray rects) {
+  {
+    std::lock_guard<std::mutex> lock(gScreenRectsMutex);
+    gScreenRectsSet = rects != nullptr && env->GetArrayLength(rects) >= 8;
+    if (gScreenRectsSet) {
+      float values[8];
+      env->GetFloatArrayRegion(rects, 0, 8, values);
+      for (int screen = 0; screen < 2; ++screen) {
+        gScreenRects[screen] = {values[screen * 4], values[screen * 4 + 1],
+                                values[screen * 4 + 2], values[screen * 4 + 3]};
+      }
     }
+  }
+  if (!gRunning.load()) return;
+  // Called during layout on the UI thread, so the redraw is queued rather than waited for. A
+  // paused game wouldn't otherwise show the new arrangement.
+  {
+    std::lock_guard<std::mutex> lock(gCommandMutex);
+    gCommands.emplace_back([] {
+      if (gRenderer.ready()) gRenderer.draw(gLastFrame);
+    });
+  }
+  gStateChanged.notify_all();
+}
+
+// The current picture as tightly packed RGBA8888, or null if nothing has been drawn yet. Its
+// width and height are written to size[0] and size[1].
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_expo_modules_krsemulator_KrsEmulatorNative_getLastFrame(JNIEnv *env, jobject,
+                                                             jintArray size) {
+  auto frame = std::make_shared<std::vector<uint8_t>>();
+  auto dimensions = std::make_shared<std::pair<int, int>>();
+  const bool copied = runOnEmulatorThread([frame, dimensions] {
+    if (gLastFrame.empty()) return false;
+    *frame = toRgba(gLastFrame);
+    *dimensions = {gLastFrame.width, gLastFrame.height};
     return true;
   });
-  if (!copied) return nullptr;
+  if (!copied || env->GetArrayLength(size) < 2) return nullptr;
+  const jint sizeValues[] = {dimensions->first, dimensions->second};
+  env->SetIntArrayRegion(size, 0, 2, sizeValues);
   jbyteArray result = env->NewByteArray(static_cast<jsize>(frame->size()));
   env->SetByteArrayRegion(result, 0, static_cast<jsize>(frame->size()),
                           reinterpret_cast<const jbyte *>(frame->data()));
@@ -869,9 +1300,9 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_setCheats(JNIEnv *env, jobject,
     }
   }
   const bool applied = runOnEmulatorThread([codes = std::move(codes)] {
-    retro_cheat_reset();
+    gCore->retro_cheat_reset();
     for (size_t i = 0; i < codes.size(); i++) {
-      retro_cheat_set(static_cast<unsigned>(i), true, codes[i].c_str());
+      gCore->retro_cheat_set(static_cast<unsigned>(i), true, codes[i].c_str());
     }
     return true;
   });
@@ -906,7 +1337,7 @@ Java_expo_modules_krsemulator_KrsEmulatorNative_loadState(JNIEnv *env, jobject, 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_expo_modules_krsemulator_KrsEmulatorNative_reset(JNIEnv *, jobject) {
   const bool done = runOnEmulatorThread([] {
-    retro_reset();
+    gCore->retro_reset();
     return true;
   });
   return done ? JNI_TRUE : JNI_FALSE;

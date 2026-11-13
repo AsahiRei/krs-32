@@ -1,6 +1,8 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
+import type { LayoutOrientation, ScreenLayout } from '@/lib/screenLayout';
 import { listRomFiles } from '@/lib/setup';
+import { type GameSystem, stripRomExtension, systemForFile } from '@/lib/systems';
 import KrsEmulator from '@/modules/krs-emulator';
 
 export type GameMeta = {
@@ -13,6 +15,8 @@ export type GameMeta = {
   coverFile?: string;
   /** Set once an online cover search has run, so the library doesn't repeat it every scan. */
   coverSearched?: boolean;
+  /** DS games: the chosen screen arrangement for each orientation. */
+  screenLayouts?: Partial<Record<LayoutOrientation, ScreenLayout>>;
 };
 
 export type GameMetaMap = Record<string, GameMeta>;
@@ -22,6 +26,7 @@ export type Rom = {
   title: string;
   fileName: string;
   uri: string;
+  system: GameSystem;
   sizeBytes: number;
   addedAt: number;
 };
@@ -152,6 +157,7 @@ export async function scanRoms(
       title: romTitle(file.name),
       fileName: file.name,
       uri: file.uri,
+      system: systemForFile(file.name) ?? 'gba',
       sizeBytes: file.size ?? 0,
       addedAt: file.modificationTime ?? 0,
     });
@@ -181,7 +187,7 @@ export async function deleteRom(game: Game, alsoDeleteSave: boolean) {
 
 /** Turns a file name like "moss_knight (EU).gba" into "Moss Knight". */
 function romTitle(fileName: string) {
-  const base = fileName.replace(/\.gba$/i, '');
+  const base = stripRomExtension(fileName);
   const title = base
     .replace(/[([].*?[)\]]/g, '')
     .replace(/_/g, ' ')

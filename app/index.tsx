@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { KrsIcon } from '@/components/KrsIcon';
 import { SetupButton, SetupCard } from '@/components/SetupCard';
+import { ROM_EXTENSIONS_LABEL } from '@/lib/systems';
 import {
   chooseRomFolder,
   importBios,
@@ -22,7 +23,7 @@ export default function Index() {
 }
 
 function gameCountLabel(count: number) {
-  if (count === 0) return 'No .gba files in this folder yet';
+  if (count === 0) return `No ${ROM_EXTENSIONS_LABEL} files in this folder yet`;
   return count === 1 ? '1 game found' : `${count} games found`;
 }
 

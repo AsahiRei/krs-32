@@ -96,8 +96,12 @@ type InGameMenuProps = {
   orientation: GameOrientation;
   onSelectOrientation: (orientation: GameOrientation) => void;
   onOpenSaveStates: () => void;
-  onOpenCheats: () => void;
-  onOpenControls: () => void;
+  /** Left out for systems whose cheats aren't supported yet, which disables the tile. */
+  onOpenCheats?: () => void;
+  /** Left out for systems the control editor doesn't support yet, which disables the tile. */
+  onOpenControls?: () => void;
+  /** DS games: replaces the Controls tile, which they don't support yet. */
+  onOpenScreenLayout?: () => void;
   onOpenScreenFilter: () => void;
   onQuickSave: () => Promise<void>;
   onQuickLoad: () => Promise<void>;
@@ -118,6 +122,7 @@ export function InGameMenu({
   onOpenSaveStates,
   onOpenCheats,
   onOpenControls,
+  onOpenScreenLayout,
   onOpenScreenFilter,
   onQuickSave,
   onQuickLoad,
@@ -287,12 +292,24 @@ export function InGameMenu({
                   <MenuTile label="Load state" onPress={onOpenSaveStates} />
                 </View>
                 <View className="flex-row gap-2">
-                  <MenuTile label="Cheats" value={`${cheatsOn} on`} onPress={onOpenCheats} />
+                  <MenuTile
+                    label="Cheats"
+                    value={onOpenCheats ? `${cheatsOn} on` : 'GBA only'}
+                    onPress={onOpenCheats}
+                  />
                   <MenuTile label="Screen filter" onPress={onOpenScreenFilter} />
                 </View>
                 <View className="flex-row gap-2">
                   <MenuTile label="Audio" />
-                  <MenuTile label="Controls" onPress={onOpenControls} />
+                  {onOpenScreenLayout ? (
+                    <MenuTile label="Screen layout" onPress={onOpenScreenLayout} />
+                  ) : (
+                    <MenuTile
+                      label="Controls"
+                      value={onOpenControls ? undefined : 'GBA only'}
+                      onPress={onOpenControls}
+                    />
+                  )}
                 </View>
               </View>
 

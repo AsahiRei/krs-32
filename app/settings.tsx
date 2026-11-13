@@ -9,16 +9,21 @@ import { type ReactNode, useCallback, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Toggle } from '@/components/Toggle';
 import { palette } from '@/constants/palette';
 import { loadControlLayout } from '@/lib/controlLayout';
 import {
   BIOS_FILE_NAME,
   chooseRomFolder,
+  DS_SYSTEM_FILES,
+  dsSystemFilesFound,
   formatFolderPath,
   importBios,
+  importDsSystemFiles,
   isBiosImported,
   listRomFiles,
   loadSettings,
+  saveSettings,
 } from '@/lib/setup';
 import { filterLabel } from '@/lib/video';
 import KrsEmulator from '@/modules/krs-emulator';
@@ -74,6 +79,7 @@ export default function SettingsScreen() {
   const [settings, setSettings] = useState(loadSettings);
   const [controllers, setControllers] = useState(() => KrsEmulator.getControllers());
   const [biosFound, setBiosFound] = useState(isBiosImported);
+  const [dsFilesFound, setDsFilesFound] = useState(dsSystemFilesFound);
   const [storage, setStorage] = useState<StorageUse | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -128,6 +134,24 @@ export default function SettingsScreen() {
     }
   }
 
+  async function importDsFiles() {
+    try {
+      if (await importDsSystemFiles()) {
+        setDsFilesFound(dsSystemFilesFound());
+        setNotice(null);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not import those files.');
+    }
+  }
+
+  function toggleAutoHide() {
+    const autoHideControls = !settings.autoHideControls;
+    setSettings({ ...settings, autoHideControls });
+    saveSettings({ autoHideControls }).catch(() => setSettings(loadSettings()));
+  }
+
+  const missingDsFiles = DS_SYSTEM_FILES.filter((name) => !dsFilesFound.includes(name));
   const { video, romFolderUri } = settings;
   const portraitOpacity = Math.round(loadControlLayout().portrait.opacity * 100);
   const totalStorage = storage ? storage.roms + storage.saves + storage.cache : 0;
@@ -182,6 +206,19 @@ export default function SettingsScreen() {
               <Detail>No controller connected</Detail>
             )}
           </SettingsRow>
+          <View className="flex-row items-center gap-3 border-b border-card-border p-3.5">
+            <View className="flex-1 gap-1">
+              <Text className="font-inter-semibold text-[16px] text-foreground">
+                Hide touch controls with a controller
+              </Text>
+              <Detail>DS games give the screens the whole display</Detail>
+            </View>
+            <Toggle
+              label="Hide touch controls with a controller"
+              value={settings.autoHideControls}
+              onChange={toggleAutoHide}
+            />
+          </View>
         </SettingsGroup>
 
         <SettingsGroup>
@@ -222,6 +259,29 @@ export default function SettingsScreen() {
               </View>
             ) : (
               <Detail>Not imported · using the built-in open BIOS</Detail>
+            )}
+          </SettingsRow>
+          <SettingsRow
+            title="DS BIOS & firmware"
+            accessibilityLabel={
+              missingDsFiles.length
+                ? `DS BIOS and firmware, ${missingDsFiles.length} missing. Import`
+                : 'DS BIOS and firmware, found. Replace'
+            }
+            onPress={importDsFiles}>
+            {missingDsFiles.length === 0 ? (
+              <View className="flex-row items-center gap-1.5">
+                <Check size={15} color={palette.success} />
+                <Text className="font-mono text-[12px] text-secondary">
+                  Found · {DS_SYSTEM_FILES.join(', ')}
+                </Text>
+              </View>
+            ) : (
+              <Detail>
+                {dsFilesFound.length === 0
+                  ? 'Not imported · using built-in firmware'
+                  : `Missing ${missingDsFiles.join(', ')} · using built-in firmware`}
+              </Detail>
             )}
           </SettingsRow>
         </SettingsGroup>

@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { loadGameMeta, saveGameMeta } from '@/lib/library';
+import { systemForFile } from '@/lib/systems';
 import { CoverSearchError, findBoxartUrl, hasCoverSearch } from '@/lib/thegamesdb';
 
 export { hasCoverSearch };
@@ -69,7 +70,8 @@ export async function downloadCover(
   signal?: AbortSignal
 ): Promise<boolean> {
   const coverBefore = loadGameMeta()[game.id]?.coverFile;
-  const url = await findBoxartUrl(game.title, signal);
+  // A game's id is its path in the ROM folder, so it ends in the ROM's extension.
+  const url = await findBoxartUrl(game.title, systemForFile(game.id) ?? 'gba', signal);
   if (!url) {
     await markCoverSearched(game.id);
     return false;

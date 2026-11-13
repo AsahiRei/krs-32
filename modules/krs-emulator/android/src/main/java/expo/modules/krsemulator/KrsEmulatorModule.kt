@@ -13,8 +13,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 
-private const val GAME_WIDTH = 240
-private const val GAME_HEIGHT = 160
 private const val UNDO_STATE = "undo"
 private const val SCREENSHOT_SCALE = 4
 private const val SCREENSHOT_FOLDER = "KRS32"
@@ -34,11 +32,13 @@ class KrsEmulatorModule : Module() {
   }
 
   private fun gameBitmap(scale: Int): Bitmap? {
-    val frame = KrsEmulatorNative.getLastFrame() ?: return null
-    val source = Bitmap.createBitmap(GAME_WIDTH, GAME_HEIGHT, Bitmap.Config.RGB_565)
+    val size = IntArray(2)
+    val frame = KrsEmulatorNative.getLastFrame(size) ?: return null
+    val (width, height) = size
+    val source = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     source.copyPixelsFromBuffer(ByteBuffer.wrap(frame))
     // Enlarging without filtering keeps the pixels square.
-    val bitmap = Bitmap.createScaledBitmap(source, GAME_WIDTH * scale, GAME_HEIGHT * scale, false)
+    val bitmap = Bitmap.createScaledBitmap(source, width * scale, height * scale, false)
     if (bitmap !== source) source.recycle()
     return bitmap
   }
@@ -85,32 +85,46 @@ class KrsEmulatorModule : Module() {
       installInputHook()
     }
 
-    Function("getCoreInfo") {
+    Function("getCoreInfo") { systemKey: String? ->
+      val id = GameSystem.fromKey(systemKey).id
       mapOf(
-        "name" to KrsEmulatorNative.coreName(),
-        "version" to KrsEmulatorNative.coreVersion(),
-        "extensions" to KrsEmulatorNative.validExtensions(),
-        "libretroApiVersion" to KrsEmulatorNative.libretroApiVersion(),
+        "name" to KrsEmulatorNative.coreName(id),
+        "version" to KrsEmulatorNative.coreVersion(id),
+        "extensions" to KrsEmulatorNative.validExtensions(id),
+        "libretroApiVersion" to KrsEmulatorNative.libretroApiVersion(id),
         "aaudioRecommended" to KrsEmulatorNative.isAAudioRecommended()
       )
     }
 
-    AsyncFunction("loadGame") { uri: String ->
+    AsyncFunction("loadGame") { uri: String, systemKey: String? ->
       val context = requireNotNull(appContext.reactContext)
-      val rom = context.contentResolver.openInputStream(Uri.parse(uri))?.use { it.readBytes() }
-        ?: throw CodedException("Could not open this file.")
+      val gameSystem = GameSystem.fromKey(systemKey)
 
       // Name saves after the ROM's contents so they survive the file being moved or renamed.
       val saves = File(context.filesDir, "saves").apply { mkdirs() }
-      val saveId = sha256(rom)
+      val saveId = hashRom(uri)
       val saveFile = File(saves, "$saveId.sav")
       stateDir = File(context.filesDir, "states/$saveId").apply { mkdirs() }
+      // Anything else a core wants to keep, such as melonDS's DSi SD card images.
+      val coreSaves = File(context.filesDir, "core-saves").apply { mkdirs() }
 
-      // A BIOS imported during setup is stored here as gba_bios.bin (see lib/setup.ts).
+      // A GBA BIOS imported during setup is stored here as gba_bios.bin (see lib/setup.ts). DS
+      // BIOS and firmware dumps (bios7.bin, bios9.bin, firmware.bin) are picked up from here too.
       val systemDir = File(context.filesDir, "system").apply { mkdirs() }
 
-      KrsEmulatorNative.start(rom, saveFile.absolutePath, systemDir.absolutePath)
-        ?.let { throw CodedException(it) }
+      // The core reads the ROM straight from the file, so a large DS ROM never sits in the Java heap.
+      val romFile = context.contentResolver.openFileDescriptor(Uri.parse(uri), "r")
+        ?: throw CodedException("Could not open this file.")
+      val error = romFile.use {
+        KrsEmulatorNative.start(
+          it.fd,
+          gameSystem.id,
+          saveFile.absolutePath,
+          coreSaves.absolutePath,
+          systemDir.absolutePath
+        )
+      }
+      error?.let { throw CodedException(it) }
       installInputHook()
       KrsInput.reset()
       KrsInput.gameActive = true
@@ -118,23 +132,11 @@ class KrsEmulatorModule : Module() {
     }
 
     AsyncFunction("getSaveId") { uri: String ->
-      val context = requireNotNull(appContext.reactContext)
-      val digest = MessageDigest.getInstance("SHA-256")
-      val stream = context.contentResolver.openInputStream(Uri.parse(uri))
-        ?: throw CodedException("Could not open this file.")
-      stream.use { input ->
-        val buffer = ByteArray(64 * 1024)
-        while (true) {
-          val count = input.read(buffer)
-          if (count < 0) break
-          digest.update(buffer, 0, count)
-        }
-      }
-      hex(digest.digest())
+      hashRom(uri)
     }
 
-    Function("getControlDefaults") {
-      controlDefaults()
+    Function("getControlDefaults") { systemKey: String? ->
+      controlDefaults(GameSystem.fromKey(systemKey))
     }
 
     Function("stop") {
@@ -235,7 +237,11 @@ class KrsEmulatorModule : Module() {
     }
 
     View(KrsEmulatorView::class) {
-      Events("onMenuPress")
+      Events("onMenuPress", "onSwapScreensPress", "onScreenLayoutPress")
+
+      Prop("system") { view: KrsEmulatorView, systemKey: String ->
+        view.setSystem(GameSystem.fromKey(systemKey))
+      }
 
       Prop("title") { view: KrsEmulatorView, title: String ->
         view.setTitle(title)
@@ -252,10 +258,33 @@ class KrsEmulatorModule : Module() {
       Prop("fastForwardSpeed") { view: KrsEmulatorView, speed: Double ->
         view.setFastForwardSpeed(speed)
       }
+
+      Prop("screenLayout") { view: KrsEmulatorView, json: String ->
+        view.setScreenLayout(json)
+      }
+
+      Prop("autoHideControls") { view: KrsEmulatorView, value: Boolean ->
+        view.setAutoHideControls(value)
+      }
     }
   }
 
-  private fun sha256(bytes: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+  /** The SHA-256 of a ROM's contents, read in pieces so large DS ROMs don't fill memory. */
+  private fun hashRom(uri: String): String {
+    val context = requireNotNull(appContext.reactContext)
+    val digest = MessageDigest.getInstance("SHA-256")
+    val stream = context.contentResolver.openInputStream(Uri.parse(uri))
+      ?: throw CodedException("Could not open this file.")
+    stream.use { input ->
+      val buffer = ByteArray(1024 * 1024)
+      while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        digest.update(buffer, 0, count)
+      }
+    }
+    return hex(digest.digest())
+  }
 
   private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 }

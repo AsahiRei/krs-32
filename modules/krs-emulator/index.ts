@@ -2,6 +2,9 @@ import { NativeModule, requireNativeModule, requireNativeView } from 'expo';
 import type { ComponentType } from 'react';
 import type { ViewProps } from 'react-native';
 
+/** Matches GameSystem in lib/systems.ts. */
+export type EmulatorSystem = 'gba' | 'nds';
+
 export type CoreInfo = {
   name: string;
   version: string;
@@ -46,12 +49,13 @@ type KrsEmulatorEvents = {
 };
 
 declare class KrsEmulatorNativeModule extends NativeModule<KrsEmulatorEvents> {
-  getCoreInfo(): CoreInfo;
-  loadGame(uri: string): Promise<{ saveExists: boolean; saveId: string }>;
+  /** The core that runs the system's games; GBA when no system is given. */
+  getCoreInfo(system?: EmulatorSystem): CoreInfo;
+  loadGame(uri: string, system: EmulatorSystem): Promise<{ saveExists: boolean; saveId: string }>;
   /** The name, without extension, of this ROM's save file. */
   getSaveId(uri: string): Promise<string>;
   /** The player's default control positions, sizes and game area for each orientation. */
-  getControlDefaults(): ControlDefaults;
+  getControlDefaults(system?: EmulatorSystem): ControlDefaults;
   /** Connected game controllers; battery is a percentage, or null when the pad doesn't report it. */
   getControllers(): { name: string; battery: number | null }[];
   setControllerMapping(json: string): void;
@@ -78,12 +82,22 @@ declare class KrsEmulatorNativeModule extends NativeModule<KrsEmulatorEvents> {
 }
 
 export type KrsEmulatorViewProps = ViewProps & {
+  /** Picks the control layout, and whether touches on the picture reach the DS touchscreen. */
+  system: EmulatorSystem;
   title: string;
   /** Saved control layout as JSON, or an empty string for the defaults. */
   controlLayout: string;
   stretchVideo: boolean;
   fastForwardSpeed: number;
+  /** DS only: the screen arrangement as JSON ({ mode, swapped, gap }), or empty for the default. */
+  screenLayout?: string;
+  /** DS only: hide the touch controls while a controller is connected. */
+  autoHideControls?: boolean;
   onMenuPress: () => void;
+  /** DS only: the screen swap button was tapped. */
+  onSwapScreensPress?: () => void;
+  /** DS only: the screen layout button was tapped. */
+  onScreenLayoutPress?: () => void;
 };
 
 export const KrsEmulatorView: ComponentType<KrsEmulatorViewProps> =

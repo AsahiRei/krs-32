@@ -1,6 +1,6 @@
+import { type GameSystem, SYSTEMS } from '@/lib/systems';
+
 const API_URL = 'https://api.thegamesdb.net/v1.1/Games/ByGameName';
-// TheGamesDB's platform id for Game Boy Advance.
-const GBA_PLATFORM_ID = '5';
 // Below this, the best result is more likely a different game than the right one.
 const MIN_MATCH_SCORE = 0.6;
 
@@ -25,16 +25,20 @@ type SearchResponse = {
 export class CoverSearchError extends Error {}
 
 /**
- * Finds the front box art for the GBA game whose name best matches the title, or null if no
+ * Finds the front box art for the system's game whose name best matches the title, or null if no
  * result is close enough. Throws CoverSearchError if the API refuses the request.
  */
-export async function findBoxartUrl(title: string, signal?: AbortSignal): Promise<string | null> {
+export async function findBoxartUrl(
+  title: string,
+  system: GameSystem,
+  signal?: AbortSignal
+): Promise<string | null> {
   if (!apiKey) throw new CoverSearchError('Cover search isn’t set up in this build.');
 
   const query = new URLSearchParams({
     apikey: apiKey,
     name: searchableTitle(title),
-    'filter[platform]': GBA_PLATFORM_ID,
+    'filter[platform]': SYSTEMS[system].theGamesDbPlatform,
     include: 'boxart',
   });
   const response = await fetch(`${API_URL}?${query}`, { signal });

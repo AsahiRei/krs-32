@@ -13,6 +13,7 @@ import kotlin.math.roundToInt
 
 // Libretro joypad button bits, as in KrsControlsView.
 private const val BIT_B = 1 shl 0
+private const val BIT_Y = 1 shl 1
 private const val BIT_SELECT = 1 shl 2
 private const val BIT_START = 1 shl 3
 private const val BIT_UP = 1 shl 4
@@ -20,6 +21,7 @@ private const val BIT_DOWN = 1 shl 5
 private const val BIT_LEFT = 1 shl 6
 private const val BIT_RIGHT = 1 shl 7
 private const val BIT_A = 1 shl 8
+private const val BIT_X = 1 shl 9
 private const val BIT_L = 1 shl 10
 private const val BIT_R = 1 shl 11
 
@@ -44,6 +46,8 @@ private val DIRECTION_NAMES = setOf(
 private val BUTTON_BITS = mapOf(
   "A" to BIT_A,
   "B" to BIT_B,
+  "X" to BIT_X,
+  "Y" to BIT_Y,
   "L" to BIT_L,
   "R" to BIT_R,
   "START" to BIT_START,

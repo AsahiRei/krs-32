@@ -5,6 +5,7 @@ import { Image, Text, View } from 'react-native';
 import { palette } from '@/constants/palette';
 import { coverUri } from '@/lib/covers';
 import { coverInitials, type Game } from '@/lib/library';
+import { SYSTEMS } from '@/lib/systems';
 
 type GameCoverProps = {
   game: Game;
@@ -44,6 +45,20 @@ export function GameCover({ game, width, height, showDetails = false }: GameCove
           </Text>
           {showDetails && <Text className="font-mono text-[11px] text-muted">no cover</Text>}
         </>
+      )}
+      {/* GBA is the default, so only DS games are marked. */}
+      {showDetails && game.system === 'nds' && (
+        <View
+          accessibilityLabel={`${SYSTEMS.nds.label} game`}
+          className="absolute bottom-2 left-2 flex-row items-center gap-1.5 rounded-md bg-background/90 px-1.5 py-1">
+          <View className="gap-[2px]">
+            <View className="h-[4px] w-[7px] rounded-[1px] bg-accent" />
+            <View className="h-[4px] w-[7px] rounded-[1px] border border-accent" />
+          </View>
+          <Text className="font-mono-medium text-[10px] tracking-[1px] text-foreground">
+            {SYSTEMS.nds.label}
+          </Text>
+        </View>
       )}
       {showDetails && game.favorite && (
         <View className="absolute right-2 top-2 h-7 w-7 items-center justify-center rounded-full bg-background">

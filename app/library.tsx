@@ -26,6 +26,7 @@ import { GameSheet } from '@/components/GameSheet';
 import { KrsIcon } from '@/components/KrsIcon';
 import { LibraryEmptyState } from '@/components/LibraryEmptyState';
 import { ScanningView } from '@/components/ScanningView';
+import { SegmentedControl } from '@/components/SegmentedControl';
 import { SortMenu } from '@/components/SortMenu';
 import { palette } from '@/constants/palette';
 import {
@@ -48,7 +49,16 @@ import {
 } from '@/lib/library';
 import { deleteCoverFile, fetchMissingCovers } from '@/lib/covers';
 import { AUTO_STATE } from '@/lib/saveStates';
-import { chooseRomFolder, formatFolderPath, formatRomPath, loadSettings } from '@/lib/setup';
+import {
+  chooseRomFolder,
+  DS_SYSTEM_FILES,
+  dsSystemFilesFound,
+  formatFolderPath,
+  formatRomPath,
+  importDsSystemFiles,
+  loadSettings,
+} from '@/lib/setup';
+import { type GameSystem, SYSTEMS } from '@/lib/systems';
 
 const SIDE_PADDING = 24;
 const COLUMN_GAP = 12;
@@ -62,6 +72,7 @@ const NO_GAMES_BODY =
 
 type Status = 'scanning' | 'ready' | 'noFolder' | 'unreadable';
 type Filter = 'all' | 'favorites';
+type SystemFilter = 'all' | GameSystem;
 type Layout = 'grid' | 'list';
 type Icon = ComponentType<{ size?: number; color?: string; strokeWidth?: number }>;
 
@@ -157,6 +168,65 @@ function LayoutOption({
 function SectionLabel({ children }: { children: string }) {
   return (
     <Text className="font-mono-medium text-[12px] tracking-[1.4px] text-secondary">{children}</Text>
+  );
+}
+
+/** Offers DS BIOS and firmware import while melonDS runs on its own built-in replacements. */
+function DsFirmwareBanner({ onImported }: { onImported: () => void }) {
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function pick() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const stored = await importDsSystemFiles();
+      if (!stored) return;
+      const missing = DS_SYSTEM_FILES.filter((name) => !dsSystemFilesFound().includes(name));
+      setMessage({
+        text: missing.length
+          ? `Imported ${stored.join(', ')}. Still missing ${missing.join(', ')}.`
+          : `Imported ${stored.join(', ')}.`,
+        error: false,
+      });
+      onImported();
+    } catch (error) {
+      setMessage({
+        text: error instanceof Error ? error.message : 'Could not import those files.',
+        error: true,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View className="mx-6 gap-2 rounded-[18px] border border-card-border bg-card p-4">
+      <View className="flex-row items-center gap-4">
+        <Text className="flex-1 font-inter text-[14px] leading-[20px] text-secondary">
+          <Text className="font-inter-semibold text-foreground">Using built-in firmware. </Text>
+          Import your DS BIOS and firmware dumps for better compatibility.
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Import DS BIOS and firmware"
+          disabled={busy}
+          onPress={pick}
+          hitSlop={8}
+          className="min-h-[44px] justify-center active:opacity-60">
+          <Text className="font-inter-semibold text-[15px] text-accent">Import</Text>
+        </Pressable>
+      </View>
+      {message && (
+        <Text
+          accessibilityLiveRegion="polite"
+          className={`font-inter text-[13px] leading-[18px] ${
+            message.error ? 'text-danger' : 'text-success'
+          }`}>
+          {message.text}
+        </Text>
+      )}
+    </View>
   );
 }
 
@@ -266,6 +336,8 @@ export default function LibraryScreen() {
   const [meta, setMeta] = useState(loadGameMeta);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [systemFilter, setSystemFilter] = useState<SystemFilter>('all');
+  const [dsFilesFound, setDsFilesFound] = useState(dsSystemFilesFound);
   const [sort, setSort] = useState<SortMode>('lastPlayed');
   const [layout, setLayout] = useState<Layout>('grid');
   const [folderUri, setFolderUri] = useState<string | null>(null);
@@ -320,20 +392,35 @@ export default function LibraryScreen() {
     [roms, meta]
   );
   const selectedGame = games.find((game) => game.id === selectedGameId);
-  const favoriteCount = useMemo(() => games.filter((game) => game.favorite).length, [games]);
+  const systemCounts = useMemo(() => {
+    const counts: Record<GameSystem, number> = { gba: 0, nds: 0 };
+    games.forEach((game) => counts[game.system]++);
+    return counts;
+  }, [games]);
+  // Only a library with games from both systems needs the system filter.
+  const mixedLibrary = systemCounts.gba > 0 && systemCounts.nds > 0;
+  const activeSystem: SystemFilter = mixedLibrary ? systemFilter : 'all';
+  const systemGames = useMemo(
+    () => (activeSystem === 'all' ? games : games.filter((game) => game.system === activeSystem)),
+    [games, activeSystem]
+  );
+  const favoriteCount = useMemo(
+    () => systemGames.filter((game) => game.favorite).length,
+    [systemGames]
+  );
   const recentGames = useMemo(
     () =>
       sortGames(
-        games.filter((game) => game.lastPlayedAt),
+        systemGames.filter((game) => game.lastPlayedAt),
         'lastPlayed'
       ).slice(0, RECENT_LIMIT),
-    [games]
+    [systemGames]
   );
   const search = query.trim();
   const visibleGames = useMemo(() => {
     const needle = search.toLowerCase();
     return sortGames(
-      games.filter(
+      systemGames.filter(
         (game) =>
           (filter === 'all' || game.favorite) &&
           (!needle ||
@@ -342,7 +429,7 @@ export default function LibraryScreen() {
       ),
       sort
     );
-  }, [games, search, filter, sort]);
+  }, [systemGames, search, filter, sort]);
 
   const cardWidth = (screenWidth - SIDE_PADDING * 2 - COLUMN_GAP * (COLUMNS - 1)) / COLUMNS;
 
@@ -432,7 +519,9 @@ export default function LibraryScreen() {
           onChangeText={setQuery}
           onFocus={() => setSearchFocused(true)}
           onBlur={() => setSearchFocused(false)}
-          placeholder={`Search ${games.length} ${games.length === 1 ? 'game' : 'games'}`}
+          placeholder={`Search ${systemGames.length} ${
+            activeSystem === 'all' ? '' : `${SYSTEMS[activeSystem].label} `
+          }${systemGames.length === 1 ? 'game' : 'games'}`}
           placeholderTextColor={palette.muted}
           returnKeyType="search"
           autoCorrect={false}
@@ -451,10 +540,23 @@ export default function LibraryScreen() {
         )}
       </View>
 
+      {mixedLibrary && (
+        <SegmentedControl<SystemFilter>
+          options={[
+            { value: 'all', label: `All  ${games.length}` },
+            { value: 'gba', label: `${SYSTEMS.gba.label}  ${systemCounts.gba}` },
+            { value: 'nds', label: `${SYSTEMS.nds.label}  ${systemCounts.nds}` },
+          ]}
+          value={activeSystem}
+          onChange={setSystemFilter}
+          height={48}
+        />
+      )}
+
       <View className="flex-row items-center gap-2">
         <FilterChip
           label="All"
-          count={games.length}
+          count={systemGames.length}
           selected={filter === 'all'}
           onPress={() => setFilter('all')}
         />
@@ -495,12 +597,21 @@ export default function LibraryScreen() {
     </View>
   );
 
+  // Shown with the DS games until all three files are in place; GBA-only libraries never see it.
+  const showFirmwareBanner =
+    systemCounts.nds > 0 &&
+    (activeSystem === 'nds' || !mixedLibrary) &&
+    dsFilesFound.length < DS_SYSTEM_FILES.length;
+
   const listHeader = search ? (
     <Text className="px-6 pb-3 pt-4 font-mono text-[12px] text-secondary" numberOfLines={1}>
       {visibleGames.length} {visibleGames.length === 1 ? 'result' : 'results'} for “{search}”
     </Text>
   ) : (
     <View className="gap-5 pb-4 pt-5">
+      {showFirmwareBanner && (
+        <DsFirmwareBanner onImported={() => setDsFilesFound(dsSystemFilesFound())} />
+      )}
       {recentGames.length > 0 && (
         <View className="gap-3">
           <View className="px-6">
@@ -523,7 +634,9 @@ export default function LibraryScreen() {
       )}
 
       <View className="flex-row items-center justify-between px-6">
-        <SectionLabel>ALL GAMES</SectionLabel>
+        <SectionLabel>
+          {activeSystem === 'all' ? 'ALL GAMES' : `${SYSTEMS[activeSystem].label} GAMES`}
+        </SectionLabel>
         <Text className="font-mono text-[12px] text-secondary">
           {visibleGames.length} · {sortOption?.summary}
         </Text>

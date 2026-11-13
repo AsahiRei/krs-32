@@ -4,6 +4,8 @@ import KrsEmulator from '@/modules/krs-emulator';
 export type MappingAction =
   | 'A'
   | 'B'
+  | 'X'
+  | 'Y'
   | 'L'
   | 'R'
   | 'START'
@@ -19,6 +21,8 @@ export type ControllerMapping = Record<MappingAction, string[]>;
 export const DEFAULT_CONTROLLER_MAPPING: ControllerMapping = {
   A: ['BUTTON_A'],
   B: ['BUTTON_B'],
+  X: ['BUTTON_X'],
+  Y: ['BUTTON_Y'],
   L: ['BUTTON_L1'],
   R: ['BUTTON_R1'],
   START: ['BUTTON_START'],
@@ -32,6 +36,8 @@ export const DEFAULT_CONTROLLER_MAPPING: ControllerMapping = {
 export const BUTTON_ROWS: { action: MappingAction; label: string }[] = [
   { action: 'A', label: 'A' },
   { action: 'B', label: 'B' },
+  { action: 'X', label: 'X (DS)' },
+  { action: 'Y', label: 'Y (DS)' },
   { action: 'L', label: 'L' },
   { action: 'R', label: 'R' },
   { action: 'START', label: 'Start' },
@@ -45,8 +51,11 @@ export const SHORTCUT_ROWS: { action: MappingAction; label: string }[] = [
   { action: 'QUICK_LOAD', label: 'Quick load' },
 ];
 
-export const loadControllerMapping = () =>
-  loadSettings().controllerMapping ?? DEFAULT_CONTROLLER_MAPPING;
+// Mappings saved before DS support have no X or Y, so they're filled in from the defaults.
+export const loadControllerMapping = (): ControllerMapping => ({
+  ...DEFAULT_CONTROLLER_MAPPING,
+  ...loadSettings().controllerMapping,
+});
 
 export async function saveControllerMapping(mapping: ControllerMapping) {
   KrsEmulator.setControllerMapping(JSON.stringify(mapping));

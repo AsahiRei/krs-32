@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { InGameMenu } from '@/components/InGameMenu';
+import { ScreenLayoutSheet } from '@/components/ScreenLayoutSheet';
 import { SetupButton } from '@/components/SetupCard';
 import { activeCheatCodes, loadCheats } from '@/lib/cheats';
 import {
@@ -35,6 +36,12 @@ import {
 } from '@/lib/saveStates';
 import { loadControlLayout } from '@/lib/controlLayout';
 import { loadControllerMapping } from '@/lib/controllerMapping';
+import {
+  loadScreenLayout,
+  saveScreenLayout,
+  type LayoutOrientation,
+  type ScreenLayout,
+} from '@/lib/screenLayout';
 import { type GameOrientation, loadSettings, saveSettings } from '@/lib/setup';
 import { applyVideoSettings } from '@/lib/video';
 import KrsEmulator, { KrsEmulatorView } from '@/modules/krs-emulator';
@@ -107,7 +114,8 @@ export default function PlayerRoute() {
 }
 
 function Player({ request: { game, startState } }: { request: PlayRequest }) {
-  const { id, uri, title } = game;
+  const { id, uri, title, system } = game;
+  const isDs = system === 'nds';
   const { width, height } = useWindowDimensions();
   const [started, setStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +131,16 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
   const [stretchVideo, setStretchVideo] = useState(
     () => loadSettings().video.aspect === 'stretch'
   );
+  const [autoHideControls] = useState(() => loadSettings().autoHideControls);
+  const [layoutSheetOpen, setLayoutSheetOpen] = useState(false);
+  const screenOrientation: LayoutOrientation = width > height ? 'landscape' : 'portrait';
+  const [screenLayouts, setScreenLayouts] = useState<Record<LayoutOrientation, ScreenLayout>>(
+    () => ({
+      portrait: loadScreenLayout(id, 'portrait'),
+      landscape: loadScreenLayout(id, 'landscape'),
+    })
+  );
+  const screenLayout = screenLayouts[screenOrientation];
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clockStartedAt = useRef<number | null>(null);
   const menuIsOpen = useRef(false);
@@ -174,6 +192,36 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
     KrsEmulator.setPaused(false);
     startClock();
   }, [startClock]);
+
+  const changeScreenLayout = useCallback(
+    (next: ScreenLayout, save: boolean) => {
+      setScreenLayouts((current) => ({ ...current, [screenOrientation]: next }));
+      // A layout that didn't save still applies for this session.
+      if (save) saveScreenLayout(id, screenOrientation, next).catch(() => {});
+    },
+    [id, screenOrientation]
+  );
+
+  const swapScreens = useCallback(() => {
+    changeScreenLayout({ ...screenLayout, swapped: !screenLayout.swapped }, true);
+  }, [changeScreenLayout, screenLayout]);
+
+  // Opens from the screen layout button or the menu; the game stays paused until it closes.
+  const openScreenLayout = useCallback(() => {
+    if (!menuIsOpen.current) {
+      menuIsOpen.current = true;
+      KrsEmulator.setPaused(true);
+      stopClock();
+    }
+    setMenuOpen(false);
+    setLayoutSheetOpen(true);
+  }, [stopClock]);
+
+  const closeScreenLayout = useCallback(() => {
+    setLayoutSheetOpen(false);
+    saveScreenLayout(id, screenOrientation, screenLayout).catch(() => {});
+    closeMenu();
+  }, [closeMenu, id, screenOrientation, screenLayout]);
 
   useFocusEffect(
     useCallback(() => {
@@ -239,7 +287,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
 
     async function boot() {
       try {
-        const loaded = await KrsEmulator.loadGame(uri);
+        const loaded = await KrsEmulator.loadGame(uri, system);
         saveId.current = loaded.saveId;
         rememberRomSaveId(uri, loaded.saveId);
       } catch (cause) {
@@ -253,7 +301,8 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       }
       KrsEmulator.setControllerMapping(JSON.stringify(loadControllerMapping()));
       await applyVideoSettings(loadSettings().video).catch(() => {});
-      if (saveId.current) {
+      // Cheat codes are checked against the GBA's formats, so DS games don't take them yet.
+      if (saveId.current && !isDs) {
         await KrsEmulator.setCheats(activeCheatCodes(loadCheats(saveId.current))).catch(() =>
           showToast({ message: "Couldn't apply your cheats." })
         );
@@ -271,7 +320,7 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       active = false;
       KrsEmulator.stop();
     };
-  }, [uri, startState, showToast]);
+  }, [uri, system, isDs, startState, showToast]);
 
   useEffect(() => {
     if (!started) return;
@@ -395,11 +444,16 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
       <StatusBar hidden />
       <NavigationBar hidden />
       <KrsEmulatorView
+        system={system}
         title={title}
         controlLayout={JSON.stringify(controlLayout)}
         stretchVideo={stretchVideo}
         fastForwardSpeed={speed}
+        screenLayout={isDs ? JSON.stringify(screenLayout) : ''}
+        autoHideControls={autoHideControls}
         onMenuPress={openMenu}
+        onSwapScreensPress={swapScreens}
+        onScreenLayoutPress={openScreenLayout}
         style={{ flex: 1 }}
       />
 
@@ -416,9 +470,10 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
           quickSlotSavedAt={quickSlotSavedAt}
           cheatsOn={cheatsOn}
           onOpenSaveStates={() => openSubScreen('/save-states?inGame=1')}
-          onOpenCheats={() => openSubScreen('/cheats?inGame=1')}
+          onOpenCheats={isDs ? undefined : () => openSubScreen('/cheats?inGame=1')}
           onOpenScreenFilter={() => openSubScreen('/screen-filter?inGame=1')}
-          onOpenControls={openControlEditor}
+          onOpenControls={isDs ? undefined : openControlEditor}
+          onOpenScreenLayout={isDs ? openScreenLayout : undefined}
           fastForwardSpeed={speed}
           onSelectSpeed={selectSpeed}
           orientation={orientation}
@@ -428,6 +483,15 @@ function Player({ request: { game, startState } }: { request: PlayRequest }) {
           onReset={() => KrsEmulator.reset()}
           onSaveAndQuit={saveAndQuit}
           onClose={closeMenu}
+        />
+      )}
+
+      {layoutSheetOpen && (
+        <ScreenLayoutSheet
+          orientation={screenOrientation}
+          layout={screenLayout}
+          onChange={(next) => changeScreenLayout(next, false)}
+          onClose={closeScreenLayout}
         />
       )}
     </SafeAreaView>

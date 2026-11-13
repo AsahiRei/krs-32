@@ -4,6 +4,7 @@ import Svg, { Path, Rect } from 'react-native-svg';
 
 import { SetupButton } from '@/components/SetupCard';
 import { palette } from '@/constants/palette';
+import { ROM_EXTENSIONS_LABEL } from '@/lib/systems';
 
 const FOLDER_PATH =
   'M0.5 16.5A16 16 0 0 1 16.5 0.5H55A16 16 0 0 1 71 16.5H143.5A16 16 0 0 1 159.5 32.5V107.5A16 16 0 0 1 143.5 123.5H16.5A16 16 0 0 1 0.5 107.5Z';
@@ -79,7 +80,7 @@ export function LibraryEmptyState({
           {body}
         </Text>
         <View className="mt-4 rounded-lg border border-card-border px-3 py-1.5">
-          <Text className="font-mono text-[12px] text-secondary">.gba — subfolders included</Text>
+          <Text className="font-mono text-[12px] text-secondary">{ROM_EXTENSIONS_LABEL} — subfolders included</Text>
         </View>
       </View>
 
